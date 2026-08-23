@@ -122,7 +122,7 @@ All UI work in this project is governed by three loaded skills — `hb-crafting-
 | HUD constellation draw-on | HUD appears | stroke trim 0→1 | 250 ms (concurrent with HUD in) | ease-out | — | wrist joint outward | full stroke, no draw |
 | HUD out | 800 ms dwell elapsed | opacity 1→0, scale →0.98 | 160 ms | ease-out | — | in place | opacity fade |
 | Popover open | menu bar click | system default | system | system | — | menu bar item | system |
-| Specimen card → detail | card click | card expands in place | 300 ms | `standardUI` + `matchedGeometryEffect` | — | the clicked card (object permanence — same element travels) | crossfade |
+| Specimen card → detail | card click | card expands in place | 250 ms | `standardUI` + `matchedGeometryEffect` | — | the clicked card (object permanence — same element travels) | crossfade |
 | Card grid first appearance | window open | opacity 0→1, translateY 8→0 per card | 200 ms each | ease-out | 30 ms/card, capped 300 ms total | — | no stagger, single fade |
 | Perform-to-preview live skeleton | user's hand | landmark positions | continuous | `.interactiveSpring` smoothing | — | tracks the hand (system-as-listener) | unchanged (user-driven, essential) |
 | Enable toggle, action save | toggle/click | system toggle + 150 ms confirmation tick | ≤150 ms | ease-out | — | control | instant |
