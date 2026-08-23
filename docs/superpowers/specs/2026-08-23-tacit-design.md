@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 **Status:** Approved pending final user review
-**Sources:** `~/Developer/kit/reports/LowFatigue-Economic-Hand-Gestures.md` (ergonomics), `~/Developer/kit/reports/Mac-Gestures-App-tech.md` (stack). Both reports are normative inputs to this spec.
+**Sources:** `docs/research/LowFatigue-Economic-Hand-Gestures.md` (ergonomics), `docs/research/Mac-Gestures-App-tech.md` (stack). Both reports are normative inputs to this spec.
 
 ---
 
@@ -32,7 +32,7 @@ Tacit is a native macOS menu bar app that watches the built-in webcam for hand g
 | Feedback | Menu bar glyph states + subtle auto-dismissing HUD |
 | Distribution | Direct-download first: notarized Developer ID, **non-sandboxed**. Action layer behind a protocol seam for a future sandboxed App Store variant (which would drop keystroke synthesis) |
 | Mapping scope | One global gesture→action map in v1; data model profile-ready |
-| Platform | macOS 15+, Swift 6, SwiftUI, Xcode project at `~/Developer/kit/tacit` |
+| Platform | macOS 15+, Swift 6, SwiftUI, Xcode project at `~/Developer/tacit` |
 
 ---
 
@@ -201,7 +201,7 @@ Initial fixtures are recorded by the user during M1 (the debug recorder is there
 
 ## 10. Execution model
 
-- Repo: `~/Developer/kit/tacit` (this repo). Xcode project generated in M1.
+- Repo: `~/Developer/tacit` (this repo; GitHub `breton-studio/tacit`, private). Xcode project generated in M1.
 - After user approval of this spec: invoke **superpowers:writing-plans** → detailed implementation plan → execute via **subagent-driven development** with **Sonnet 5** worker agents.
 - Parallel tracks per milestone where dependencies allow: (a) capture/detection, (b) classifier/arbitration fixture-TDD, (c) actions/mapping, (d) UI, (e) system integration. Fable 5 (session lead) integrates, reviews every merge against this spec's §4 binding rules and the loaded craft skills, and runs milestone gates with the user.
 - Worker agents are instructed to read this spec §4–§5 verbatim before any UI task; motion values come from `TacitMotion.swift` tokens only.
