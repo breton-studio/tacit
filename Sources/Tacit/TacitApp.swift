@@ -10,9 +10,15 @@ struct TacitApp: App {
     @StateObject private var engine = PlaceholderEngine()
     #endif
 
+    /// Owns the fixture-recording flow (Task 10). Task 11's `TacitEngine` will hold its own
+    /// reference to feed it live frames via `append(_:)` — for now this app instance is the sole
+    /// owner, and the popover just drives `start(seconds:label:)` against it.
+    @StateObject private var fixtureRecorder = FixtureRecorder()
+
     var body: some Scene {
         MenuBarExtra {
             PopoverView(engine: engine)
+                .environmentObject(fixtureRecorder)
         } label: {
             Image(nsImage: MenuBarGlyphImageCache.shared.image(for: engine.glyphState))
         }

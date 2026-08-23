@@ -56,12 +56,16 @@ struct TacitToggleStyle: ToggleStyle {
 /// surface per spec §4.4 — `.ultraThinMaterial`, hairlines, no opaque slabs.
 struct PopoverView<Engine: EngineUIState>: View {
     @ObservedObject var engine: Engine
+    @EnvironmentObject private var fixtureRecorder: FixtureRecorder
 
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginErrorMessage: String?
+
+    @State private var isOptionKeyDown = false
+    @State private var fixtureLabel = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -78,6 +82,11 @@ struct PopoverView<Engine: EngineUIState>: View {
                 warningRow(warning)
             }
 
+            if isOptionKeyDown {
+                hairline
+                fixtureDebugSection
+            }
+
             hairline
 
             openLibraryButton
@@ -87,6 +96,11 @@ struct PopoverView<Engine: EngineUIState>: View {
         .frame(width: 280)
         .background(.ultraThinMaterial)
         .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: engine.warning)
+        // Debug-only reveal, no animation magic number needed: an instant show/hide while ⌥ is
+        // held reads as "peeking behind a panel," not as a UI transition worth tokenizing.
+        .onModifierKeysChanged(mask: .option) { _, newModifiers in
+            isOptionKeyDown = newModifiers.contains(.option)
+        }
     }
 
     // MARK: - Rows
@@ -170,6 +184,41 @@ struct PopoverView<Engine: EngineUIState>: View {
 
     private var hairline: some View {
         Divider().opacity(0.5)
+    }
+
+    // MARK: - Fixture debug section (⌥-revealed)
+
+    /// Hidden by default; shown only while ⌥ is held, per brief. Lets a developer record a
+    /// labeled `LandmarkFrame` clip to `~/Documents/TacitFixtures/` without any product-facing
+    /// affordance. The recorder itself is a passive sink (see `FixtureRecorder`) — Task 11's
+    /// engine is what will actually feed it frames via `append(_:)`; this section only drives
+    /// `start(seconds:label:)` and reflects its published state.
+    private var fixtureDebugSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Fixture Recorder")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Label", text: $fixtureLabel)
+                .textFieldStyle(.roundedBorder)
+                .disabled(fixtureRecorder.isRecording)
+
+            Button(recordButtonTitle) {
+                fixtureRecorder.start(seconds: 10, label: fixtureLabel)
+            }
+            .buttonStyle(TacitButtonStyle())
+            .disabled(fixtureRecorder.isRecording)
+
+            if let lastError = fixtureRecorder.lastError {
+                Text(lastError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var recordButtonTitle: String {
+        fixtureRecorder.isRecording ? "Recording… \(fixtureRecorder.remainingSeconds) s" : "Record 10 s"
     }
 
     // MARK: - Launch at Login
