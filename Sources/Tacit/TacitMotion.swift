@@ -10,6 +10,14 @@ enum TacitMotion {
     static let hudOut        = Animation.easeOut(duration: 0.16)
     static let armedPulse    = Animation.spring(duration: 0.30, bounce: 0.15)
     static let signature     = Animation.spring(duration: 0.45, bounce: 0.15)
+    /// The HUD's constellation draw-on (spec §4 motion table, "HUD constellation draw-on" row):
+    /// `drawProgress` 0→1, 250 ms ease-out, concurrent with — but a distinct curve/duration
+    /// from — `hudIn`. Not one of §4.5's five named token categories; added here anyway so the
+    /// value stays a single source of truth rather than a literal at the call site.
+    static let hudConstellationDrawOn = Animation.easeOut(duration: 0.25)
+    /// HUD dwell (spec §4 motion table, "HUD out" row's trigger): how long the HUD holds at rest
+    /// before `hudOut` plays. Sanctioned addition per Task 16's brief.
+    static let hudDwell: TimeInterval = 0.8
     /// `armedPulse`'s duration as a plain `TimeInterval`, for call sites that need to sequence a
     /// second animation leg after the first one finishes (e.g. the fired-glyph scale pulse's
     /// 1→1.06 leg, then 1.06→1). `Animation` doesn't expose its spring duration introspectably, so

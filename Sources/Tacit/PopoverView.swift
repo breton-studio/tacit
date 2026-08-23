@@ -1,5 +1,6 @@
 import ServiceManagement
 import SwiftUI
+import TacitCore
 
 /// Custom press feedback (spec §4.6 / §4 motion table): every pressable control in the popover
 /// scales to 0.97 on press using `TacitMotion.pressFeedback`, honoring Reduce Motion. Also
@@ -67,6 +68,12 @@ struct PopoverView<Engine: EngineUIState>: View {
     @State private var isOptionKeyDown = false
     @State private var fixtureLabel = ""
 
+    #if DEBUG
+    /// Manual-verification-only: fires a fake `HUDController.show` from the ⌥-debug section
+    /// (brief step 3/5). Never wired to the real engine — Task 21 does that.
+    @State private var hudController = HUDController()
+    #endif
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -85,6 +92,10 @@ struct PopoverView<Engine: EngineUIState>: View {
             if isOptionKeyDown {
                 hairline
                 fixtureDebugSection
+                #if DEBUG
+                hairline
+                hudDebugSection
+                #endif
             }
 
             hairline
@@ -232,6 +243,23 @@ struct PopoverView<Engine: EngineUIState>: View {
     private func recordButtonTitle(seconds: Int) -> String {
         fixtureRecorder.isRecording ? "Recording… \(fixtureRecorder.remainingSeconds) s" : "Record \(seconds) s"
     }
+
+    #if DEBUG
+    /// Fires a fake gesture event through `HUDController` so the HUD's motion (spec §4) can be
+    /// eyeballed without waiting on Task 21's real `TacitEngine` wiring.
+    private var hudDebugSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("HUD")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            Button("Test HUD") {
+                hudController.show(gesture: .victory, actionSummary: "⌃Tab", frame: nil)
+            }
+            .buttonStyle(TacitButtonStyle())
+        }
+    }
+    #endif
 
     // MARK: - Launch at Login
 
