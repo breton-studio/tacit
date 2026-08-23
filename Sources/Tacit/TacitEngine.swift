@@ -334,6 +334,14 @@ private actor PipelineCore {
     private var previewActive = false
     private var previewTapDetector = PinchTapDetector()
     private var previewSwipeDetector = ThumbSwipeDetector()
+    /// Fix (post-Task-19 review): tap/swipe detectors only fire on the ONE frame a tap releases or
+    /// a swipe's travel threshold is crossed — at ~15Hz that's a ~66ms candidate, invisible as a
+    /// "light up." This latches that momentary candidate so `previewCandidate` keeps reporting it
+    /// for `previewLatchDuration` after the firing frame, giving the strip something actually
+    /// visible to show. Expiry is driven entirely by `frame.timestamp` (never `Date()`), matching
+    /// every other time-based decision in this pipeline.
+    private var previewLatch: (candidate: GestureCandidate, expiresAt: TimeInterval)?
+    private static let previewLatchDuration: TimeInterval = 0.6
 
     struct Result: Sendable {
         var frame: LandmarkFrame?
@@ -351,10 +359,14 @@ private actor PipelineCore {
     ///
     /// When `previewActive`, this ALSO runs the frame through preview-scoped
     /// `PinchTapDetector`/`ThumbSwipeDetector` instances, entirely independent of (and never
-    /// feeding into) `arbitration`. Tap/swipe candidates take precedence over the static
-    /// classifier's `candidate` for the returned `previewCandidate` — mirroring the precedence
-    /// planned for production once tap/swipe join arbitration — falling back to `candidate` when
-    /// neither detector fires this frame.
+    /// feeding into) `arbitration` — `candidate` is computed and fed to `arbitration.ingest` first,
+    /// identically regardless of `previewActive`, and nothing below this point ever reads back into
+    /// `arbitration` or the production `candidate`/`event` values.
+    ///
+    /// `previewCandidate` precedence: a freshly-firing tap/swipe candidate this frame > an
+    /// unexpired latch from an earlier firing > the frame's own static `candidate`. A live static
+    /// pose (held) is never masked by a stale (expired) latch — the latch is dropped the first
+    /// frame it expires and the static candidate takes over immediately.
     func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) async -> Result {
         let frames = await detector.detect(in: pixelBuffer, timestamp: timestamp)
         let frame = frames.first
@@ -363,11 +375,14 @@ private actor PipelineCore {
 
         var previewCandidate: GestureCandidate?
         if previewActive, let frame {
-            if let tap = previewTapDetector.ingest(frame) {
-                previewCandidate = tap
-            } else if let swipe = previewSwipeDetector.ingest(frame) {
-                previewCandidate = swipe
+            let momentary = previewTapDetector.ingest(frame) ?? previewSwipeDetector.ingest(frame)
+            if let momentary {
+                previewLatch = (candidate: momentary, expiresAt: frame.timestamp + Self.previewLatchDuration)
+                previewCandidate = momentary
+            } else if let latch = previewLatch, frame.timestamp < latch.expiresAt {
+                previewCandidate = latch.candidate
             } else {
+                previewLatch = nil
                 previewCandidate = candidate
             }
         }
@@ -389,8 +404,11 @@ private actor PipelineCore {
     /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds both
     /// preview detectors from scratch, so a freshly-opened card never inherits mid-gesture tracking
     /// state (e.g. a half-completed swipe) left over from whichever card's preview ran before it.
+    /// The momentary-candidate latch is cleared on EITHER transition (on or off) so a lit tap/swipe
+    /// from one card's session never bleeds into the next.
     func setPreviewActive(_ active: Bool) {
         previewActive = active
+        previewLatch = nil
         if active {
             previewTapDetector = PinchTapDetector()
             previewSwipeDetector = ThumbSwipeDetector()
