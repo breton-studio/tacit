@@ -15,6 +15,48 @@ public enum HandJoint: String, Codable, CaseIterable, Sendable {
 
 extension HandJoint: CodingKeyRepresentable {}
 
+extension HandJoint {
+    /// Vision's `VNHumanHandPoseObservation.JointName` rawValue string for this joint.
+    ///
+    /// TacitCore imports Foundation only (no Vision), so these are plain string literals copied
+    /// verbatim from `VNHumanHandPoseObservation.JointName.*.rawValue.rawValue`, printed via a
+    /// throwaway scratch script that imported Vision — not guessed.
+    public var visionName: String {
+        switch self {
+        case .wrist: "VNHLKWRI"
+        case .thumbCMC: "VNHLKTCMC"
+        case .thumbMP: "VNHLKTMP"
+        case .thumbIP: "VNHLKTIP"
+        case .thumbTip: "VNHLKTTIP"
+        case .indexMCP: "VNHLKIMCP"
+        case .indexPIP: "VNHLKIPIP"
+        case .indexDIP: "VNHLKIDIP"
+        case .indexTip: "VNHLKITIP"
+        case .middleMCP: "VNHLKMMCP"
+        case .middlePIP: "VNHLKMPIP"
+        case .middleDIP: "VNHLKMDIP"
+        case .middleTip: "VNHLKMTIP"
+        case .ringMCP: "VNHLKRMCP"
+        case .ringPIP: "VNHLKRPIP"
+        case .ringDIP: "VNHLKRDIP"
+        case .ringTip: "VNHLKRTIP"
+        case .littleMCP: "VNHLKPMCP"
+        case .littlePIP: "VNHLKPPIP"
+        case .littleDIP: "VNHLKPDIP"
+        case .littleTip: "VNHLKPTIP"
+        }
+    }
+
+    /// Reverse lookup: Vision's `JointName` rawValue string back to a `HandJoint`, or `nil` if the
+    /// string doesn't match any known joint.
+    public static func fromVisionName(_ name: String) -> HandJoint? {
+        visionNameToJoint[name]
+    }
+
+    private static let visionNameToJoint: [String: HandJoint] =
+        Dictionary(uniqueKeysWithValues: HandJoint.allCases.map { ($0.visionName, $0) })
+}
+
 public struct JointPoint: Codable, Equatable, Sendable {
     public var x: Double, y: Double, confidence: Double
     public init(x: Double, y: Double, confidence: Double) {
