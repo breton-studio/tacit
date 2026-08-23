@@ -88,21 +88,24 @@ struct CardDetailView: View {
         .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
     }
 
-    // MARK: - Action binder (Task 18 mount point)
+    // MARK: - Action binder (Task 18)
 
-    /// Task 18 fills this region in with the real four-way action binder (spec §5: "keystroke
-    /// recorder, app picker, URL field with validation, Shortcut picker"). Left as a clearly
-    /// marked, disabled stub for now — this task only owns the container it lives in.
+    /// The four-way action binder (spec §5: "keystroke recorder, app picker, URL field with
+    /// validation, Shortcut picker") — `ActionBinderView` in `ActionBinders.swift`. Hidden
+    /// entirely for reserved entries: `looseFist`/`openPalm` are never user-bindable
+    /// (`MappingStore.setBinding` no-ops for them too), and `bindingLine` above already shows
+    /// their reserved copy ("Reserved — arms Tacit" / "Reserved — disarms"), so this section would
+    /// have nothing truthful to offer.
+    @ViewBuilder
     private var actionBinderSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("ACTION")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        if !entry.isReserved {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("ACTION")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            // MARK: Task 18 mount point — action binder (keystroke / app / URL / Shortcut)
-            Menu("Choose an action…") {}
-                .disabled(true)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                ActionBinderView(entry: entry, store: store)
+            }
         }
     }
 
