@@ -22,7 +22,9 @@ public struct CatalogEntry: Sendable {
     public var displayName: String
     public var tier: GestureTier
     public var kind: GestureKind
-    /// Fatigue/RSI characterization from the report's Summary table, e.g. "Low fatigue", "Moderate".
+    /// Fatigue/RSI characterization from the report's Summary table, e.g. "Low fatigue",
+    /// "Moderate fatigue", "High fatigue" — always phrased as "<level> fatigue" so the value reads
+    /// unambiguously even detached from the field name.
     public var comfort: String
     /// False-positive risk from the report's Summary table, e.g. "Low", "Medium", "Very Low".
     public var falsePositiveRisk: String
@@ -103,7 +105,7 @@ public enum GestureCatalog {
             comfort: "Low fatigue",
             falsePositiveRisk: "Low",
             editorial: "Two separated fingers are easy for the camera to tell apart, but the spread "
-                + "costs more comfort than it looks — keep it brief, not held.",
+                + "costs more comfort than it appears to — keep it brief, not held.",
             isReserved: false
         ),
         CatalogEntry(
@@ -145,10 +147,11 @@ public enum GestureCatalog {
             displayName: "Thumb–Ring/Pinky Tap",
             tier: .workhorse,
             kind: .staticPose,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Medium",
-            editorial: "The ring finger is tendon-coupled to the middle finger and the pinky is "
-                + "weak, so this channel is best reserved for rarer commands, not the busiest ones.",
+            editorial: "Anatomically it's a thumb tap, so it sits with the other workhorses — but "
+                + "the ring finger is tendon-coupled to the middle finger and the pinky is weak, "
+                + "and the research rates this one for occasional rather than high-frequency use.",
             isReserved: false
         ),
         CatalogEntry(
@@ -180,7 +183,7 @@ public enum GestureCatalog {
             displayName: "Swipe Left",
             tier: .occasional,
             kind: .dynamic,
-            comfort: "Low–Moderate",
+            comfort: "Low–Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "An unambiguous directional flick; it costs more motion than a static pose "
                 + "but is rarely triggered by accident.",
@@ -191,7 +194,7 @@ public enum GestureCatalog {
             displayName: "Swipe Right",
             tier: .occasional,
             kind: .dynamic,
-            comfort: "Low–Moderate",
+            comfort: "Low–Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "The mirror of swipe left — a paired directional idiom that reads as one "
                 + "learnable pattern rather than two separate gestures.",
@@ -202,7 +205,7 @@ public enum GestureCatalog {
             displayName: "Swipe Up",
             tier: .occasional,
             kind: .dynamic,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "A larger flick than the horizontal swipes, so it costs a bit more effort — "
                 + "appropriate for an occasional rather than a high-frequency command.",
@@ -213,7 +216,7 @@ public enum GestureCatalog {
             displayName: "Swipe Down",
             tier: .occasional,
             kind: .dynamic,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "Mirrors swipe up, with the same moderate effort and the same "
                 + "occasional-use budget.",
@@ -246,7 +249,7 @@ public enum GestureCatalog {
             displayName: "Wrist Rotate",
             tier: .occasional,
             kind: .dynamic,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "A rotary metaphor for continuous values — keep the twist to a partial arc, "
                 + "since a full pronation or supination is uncomfortable to hold.",
@@ -270,7 +273,7 @@ public enum GestureCatalog {
             displayName: "Palm Push",
             tier: .deliberate,
             kind: .dynamic,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "A deliberate push toward the camera; depth is coarse on a single lens, so "
                 + "this is best used as one big, infrequent confirmation.",
@@ -281,7 +284,7 @@ public enum GestureCatalog {
             displayName: "Wave",
             tier: .deliberate,
             kind: .dynamic,
-            comfort: "Moderate",
+            comfort: "Moderate fatigue",
             falsePositiveRisk: "Medium",
             editorial: "Highly visible and socially legible, which cuts both ways — reserved for "
                 + "rare use so it doesn't fire in the middle of a conversation.",
@@ -292,7 +295,7 @@ public enum GestureCatalog {
             displayName: "Two-Hand Frame",
             tier: .deliberate,
             kind: .twoHand,
-            comfort: "High",
+            comfort: "High fatigue",
             falsePositiveRisk: "Very Low",
             editorial: "Two hands together are nearly impossible to trigger by accident, which is "
                 + "exactly why this is reserved for a single rare, powerful action.",

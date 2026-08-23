@@ -28,6 +28,14 @@ private struct MappingsFile: Codable {
 /// The persistent store of user gesture→action bindings. Backed by `mappings.json` in an
 /// application-support directory (injectable for tests). Never crashes on a corrupt or
 /// future-versioned file — it quarantines the bad file and falls back to defaults.
+///
+/// `@MainActor`-isolated: only UI code (the specimen-book / mapping-editor surfaces) is expected to
+/// read or write bindings, matching the convention `TacitEngine`/`FixtureRecorder` already use for
+/// main-actor-owned, `@Published`-backed state in this codebase. This also means every file
+/// operation `MappingStore` performs (`load`/`persist`/`recoverFromCorruption`) runs on the main
+/// actor; that's acceptable here because these are small, local JSON reads/writes against a tiny
+/// per-user file, not per-frame hot-path work.
+@MainActor
 public final class MappingStore: ObservableObject {
     /// The current `mappings.json` wire format version. Bump this — and add a migration path
     /// instead of just recovering to defaults — the day the wire format needs to change in a way
@@ -79,10 +87,19 @@ public final class MappingStore: ObservableObject {
     /// Renames the unreadable/unrecognized file to `mappings.json.corrupt-<timestamp>` — preserving
     /// it for later inspection rather than silently overwriting it — then resets to defaults and
     /// persists a fresh, valid file in its place.
+    ///
+    /// The quarantine name is collision-safe: if a file already exists at the timestamped name
+    /// (e.g. two recoveries land in the same directory within the same microsecond, or a prior
+    /// quarantined file was never cleaned up), an incrementing `-2`, `-3`, … suffix is appended
+    /// until a free name is found. This never deletes an existing quarantined file to make room.
     private func recoverFromCorruption() {
         let timestamp = String(format: "%.6f", Date().timeIntervalSince1970)
-        let quarantineURL = directory.appendingPathComponent("mappings.json.corrupt-\(timestamp)")
-        try? FileManager.default.removeItem(at: quarantineURL)
+        var quarantineURL = directory.appendingPathComponent("mappings.json.corrupt-\(timestamp)")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: quarantineURL.path) {
+            quarantineURL = directory.appendingPathComponent("mappings.json.corrupt-\(timestamp)-\(suffix)")
+            suffix += 1
+        }
         try? FileManager.default.moveItem(at: fileURL, to: quarantineURL)
 
         bindings = Self.defaultBindings()

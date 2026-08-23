@@ -10,6 +10,7 @@ private func makeTempDirectory() -> URL {
 
 // MARK: - First launch defaults
 
+@MainActor
 @Test func firstLaunchHasExactlySixEnabledUserBindings() {
     let store = MappingStore(directory: makeTempDirectory())
 
@@ -27,12 +28,14 @@ private func makeTempDirectory() -> URL {
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command, .shift]))))
 }
 
+@MainActor
 @Test func firstLaunchReservedGesturesAreEnabledWithNilAction() {
     let store = MappingStore(directory: makeTempDirectory())
     #expect(store.binding(for: .looseFist) == GestureBinding(enabled: true, action: nil))
     #expect(store.binding(for: .openPalm) == GestureBinding(enabled: true, action: nil))
 }
 
+@MainActor
 @Test func firstLaunchOnlyTheSixUserBindingsAndTwoReservedAreEnabled() {
     let store = MappingStore(directory: makeTempDirectory())
     let enabledIDs = Set(GestureID.allCases.filter { store.binding(for: $0).enabled })
@@ -43,6 +46,7 @@ private func makeTempDirectory() -> URL {
     #expect(enabledIDs == expected)
 }
 
+@MainActor
 @Test func defaultBindingsCoverAllTwentyOneGestureIDs() {
     let defaults = MappingStore.defaultBindings()
     #expect(Set(defaults.keys) == Set(GestureID.allCases))
@@ -50,6 +54,7 @@ private func makeTempDirectory() -> URL {
 
 // MARK: - Persistence
 
+@MainActor
 @Test func setBindingPersistsAcrossASecondStoreInstance() {
     let dir = makeTempDirectory()
     let store1 = MappingStore(directory: dir)
@@ -60,6 +65,7 @@ private func makeTempDirectory() -> URL {
     #expect(store2.binding(for: .swipeLeft) == newBinding)
 }
 
+@MainActor
 @Test func setBindingOnUnboundGestureUsesSensibleDisabledDefault() {
     let store = MappingStore(directory: makeTempDirectory())
     let binding = store.binding(for: .wave)
@@ -68,6 +74,7 @@ private func makeTempDirectory() -> URL {
 
 // MARK: - Reserved gestures are never bindable
 
+@MainActor
 @Test func setBindingOnReservedGestureIsANoOp() {
     let dir = makeTempDirectory()
     let store1 = MappingStore(directory: dir)
@@ -82,6 +89,7 @@ private func makeTempDirectory() -> URL {
 
 // MARK: - Corruption recovery
 
+@MainActor
 @Test func corruptFileRecoversToDefaultsAndPreservesCorruptFile() throws {
     let dir = makeTempDirectory()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -101,6 +109,7 @@ private func makeTempDirectory() -> URL {
     }
 }
 
+@MainActor
 @Test func unknownVersionRecoversToDefaults() throws {
     let dir = makeTempDirectory()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -116,6 +125,7 @@ private func makeTempDirectory() -> URL {
     #expect(corruptFiles.count == 1)
 }
 
+@MainActor
 @Test func recoveryNeverThrowsOrCrashesForGarbageBytes() throws {
     let dir = makeTempDirectory()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -124,4 +134,34 @@ private func makeTempDirectory() -> URL {
 
     let store = MappingStore(directory: dir)
     #expect(store.bindings == MappingStore.defaultBindings())
+}
+
+/// Two successive corrupt-recoveries into the *same* directory must preserve BOTH quarantined
+/// files — a collision on the quarantine name (e.g. two recoveries landing in the same directory)
+/// must never delete a previously quarantined corrupt file to make room for a new one.
+@MainActor
+@Test func twoSuccessiveCorruptRecoveriesPreserveBothQuarantinedFiles() throws {
+    let dir = makeTempDirectory()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fileURL = dir.appendingPathComponent("mappings.json")
+
+    try Data("first corrupt payload".utf8).write(to: fileURL)
+    _ = MappingStore(directory: dir)
+
+    let firstQuarantined = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        .filter { $0.hasPrefix("mappings.json.corrupt-") }
+    #expect(firstQuarantined.count == 1)
+
+    try Data("second corrupt payload".utf8).write(to: fileURL)
+    _ = MappingStore(directory: dir)
+
+    let afterSecondRecovery = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        .filter { $0.hasPrefix("mappings.json.corrupt-") }
+    #expect(afterSecondRecovery.count == 2, "both corrupt files must survive, got \(afterSecondRecovery)")
+
+    // Both payloads must be independently recoverable — neither was overwritten by the other.
+    let payloads = try afterSecondRecovery
+        .map { try Data(contentsOf: dir.appendingPathComponent($0)) }
+        .map { String(decoding: $0, as: UTF8.self) }
+    #expect(Set(payloads) == ["first corrupt payload", "second corrupt payload"])
 }
