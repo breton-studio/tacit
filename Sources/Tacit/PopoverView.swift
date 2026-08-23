@@ -203,8 +203,16 @@ struct PopoverView<Engine: EngineUIState>: View {
                 .textFieldStyle(.roundedBorder)
                 .disabled(fixtureRecorder.isRecording)
 
-            Button(recordButtonTitle) {
+            Button(recordButtonTitle(seconds: 10)) {
                 fixtureRecorder.start(seconds: 10, label: fixtureLabel)
+            }
+            .buttonStyle(TacitButtonStyle())
+            .disabled(fixtureRecorder.isRecording)
+
+            // Secondary, longer clip: the negative fixtures (typing, conversation) need real
+            // sustained activity, not a single 10 s snippet.
+            Button(recordButtonTitle(seconds: 60)) {
+                fixtureRecorder.start(seconds: 60, label: fixtureLabel)
             }
             .buttonStyle(TacitButtonStyle())
             .disabled(fixtureRecorder.isRecording)
@@ -217,8 +225,8 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
     }
 
-    private var recordButtonTitle: String {
-        fixtureRecorder.isRecording ? "Recording… \(fixtureRecorder.remainingSeconds) s" : "Record 10 s"
+    private func recordButtonTitle(seconds: Int) -> String {
+        fixtureRecorder.isRecording ? "Recording… \(fixtureRecorder.remainingSeconds) s" : "Record \(seconds) s"
     }
 
     // MARK: - Launch at Login

@@ -25,68 +25,11 @@ protocol EngineUIState: ObservableObject {
     func pause(for duration: TimeInterval)
 }
 
-#if DEBUG
-/// Manual-verification-only stand-in for `EngineUIState`, cycling through all four glyph states
-/// on a timer. Used solely to exercise the menu bar glyph and popover by eye (state transitions,
-/// Reduce Motion, launch-at-login) before Task 11's real `TacitEngine` exists. Compiled out of
-/// release builds by `#if DEBUG`.
-@MainActor
-final class StubEngine: ObservableObject, EngineUIState {
-    @Published private(set) var glyphState: GlyphState = .watching
-    @Published var isEnabled: Bool = true
-    @Published private(set) var warning: String? = nil
-
-    /// `nonisolated(unsafe)`: only ever written from `init` (main actor) and read in `deinit`,
-    /// which runs nonisolated by language rule even though this class is `@MainActor` — `Timer`
-    /// isn't `Sendable`, so a plain isolated stored property can't be touched from `deinit`.
-    private nonisolated(unsafe) var timer: Timer?
-    /// Dwells briefly on `.fired` (like a real gesture fire) between longer holds so the pulse is
-    /// easy to catch by eye.
-    private let cycle: [GlyphState] = [.watching, .armed, .fired, .armed, .watching, .paused]
-    private var index = 0
-
-    init() {
-        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.advance() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
-    }
-
-    private func advance() {
-        index = (index + 1) % cycle.count
-        glyphState = cycle[index]
-    }
-
-    func pause(for duration: TimeInterval) {
-        glyphState = .paused
-        isEnabled = false
-        // Stub only: a real resume-after-`duration` timer is Task 11's responsibility.
-    }
-
-    deinit {
-        timer?.invalidate()
-    }
-}
-#endif
-
-/// Always-available (all build configurations) stand-in for `EngineUIState`, used until Task 11
-/// wires in the real `TacitEngine`. Unlike `StubEngine` above (DEBUG-only, cycles states for
-/// manual glyph verification), this makes no attempt to simulate activity — a fixed `.paused`
-/// state — so the popover has a concrete `EngineUIState` to bind to in release builds too.
-@MainActor
-final class PlaceholderEngine: ObservableObject, EngineUIState {
-    @Published private(set) var glyphState: GlyphState = .paused
-    // Matches `glyphState == .paused` above — a release build must not show a "Paused" header
-    // next to a "Tacit is watching" master toggle.
-    @Published var isEnabled: Bool = false
-    @Published private(set) var warning: String? = nil
-
-    func pause(for duration: TimeInterval) {
-        glyphState = .paused
-        isEnabled = false
-    }
-}
+// `StubEngine` (manual-verification stand-in cycling glyph states) and `PlaceholderEngine`
+// (release-build stand-in) lived here through Task 10, ahead of the real `TacitEngine` (Task 11).
+// Both are gone now that `TacitEngine` (Sources/Tacit/TacitEngine.swift) is wired into
+// `TacitApp` in every build configuration; neither had any remaining reference (no
+// `#Preview`/`PreviewProvider` used either), so there was nothing left for them to stand in for.
 
 /// The app's one accent color (spec §4.1): used solely for the armed/active semantic, never for
 /// decoration. Funneled through this single constant so it stays swappable in one place — once an
