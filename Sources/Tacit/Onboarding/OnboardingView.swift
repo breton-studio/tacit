@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import SwiftUI
 import TacitCore
@@ -67,7 +68,12 @@ struct OnboardingView: View {
             finish()
             return
         }
-        withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI)) {
+        // Animate unconditionally (per code review fix): only `stepTransition`'s TYPE varies with
+        // Reduce Motion (move vs. crossfade) — same precedent as `LibraryWindow.expand`/`collapse`
+        // and this file's own `ClutchStepView` "Armed." text swap. Gating the animation itself
+        // behind `.respecting` here would have made the Reduce Motion `.opacity` transition jump-cut
+        // instead of actually crossfading, defeating the point of choosing that transition.
+        withAnimation(TacitMotion.standardUI) {
             step = next
         }
     }
@@ -171,6 +177,10 @@ private struct PrimarySkipButtons: View {
 /// denial (capture stays `.unavailable` → glyph stays `.paused`) never falsely advances. Checked
 /// both on appear (permission already granted from an earlier session) and on every
 /// `glyphState` change thereafter — no polling needed since `TacitEngine` is already `@Published`.
+///
+/// macOS never re-prompts once denied (code review fix): while `engine.isCameraUnavailable`, the
+/// "Allow Camera" button — which would silently do nothing — is swapped for a one-line explanation
+/// plus a button straight to System Settings' Camera privacy pane. "Skip" stays available either way.
 private struct CameraStepView: View {
     @ObservedObject var engine: TacitEngine
     var onAdvance: () -> Void
@@ -190,9 +200,20 @@ private struct CameraStepView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+                if engine.isCameraUnavailable {
+                    Text("Camera access was denied. Open System Settings → Privacy & Security → Camera.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
         } buttons: {
-            PrimarySkipButtons(primaryTitle: "Allow Camera", primaryAction: { engine.start() }, onSkip: onSkip)
+            PrimarySkipButtons(
+                primaryTitle: engine.isCameraUnavailable ? "Open System Settings" : "Allow Camera",
+                primaryAction: engine.isCameraUnavailable ? openSystemSettings : { engine.start() },
+                onSkip: onSkip
+            )
         }
         .onAppear { checkAdvance() }
         .onChange(of: engine.glyphState) { _, _ in checkAdvance() }
@@ -201,6 +222,11 @@ private struct CameraStepView: View {
     private func checkAdvance() {
         guard engine.glyphState != .paused else { return }
         onAdvance()
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera") else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
@@ -342,6 +368,16 @@ private struct ClutchStepView: View {
             // step skippable" without inventing a second control that would just duplicate it.
             Button("Skip", action: onSkip)
                 .buttonStyle(TacitButtonStyle())
+        }
+        .onAppear {
+            // Symmetric with Steps 1 and 2's own on-appear checks (permission/state already
+            // satisfied before the step is even seen): if the clutch is already `.armed` by the
+            // time this step mounts (e.g. the user re-armed it while lingering on an earlier step,
+            // or capture state settles before SwiftUI finishes mounting), the ONLY other trigger —
+            // `onChange`, which fires on a TRANSITION — would never fire, silently stalling the
+            // step until the window is closed some other way.
+            guard engine.glyphState == .armed, !hasArmed else { return }
+            playSignature()
         }
         .onChange(of: engine.glyphState) { _, newValue in
             guard newValue == .armed, !hasArmed else { return }

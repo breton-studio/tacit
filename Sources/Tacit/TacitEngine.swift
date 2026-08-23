@@ -46,6 +46,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     @Published private(set) var glyphState: GlyphState = .paused
     @Published var isEnabled: Bool
     @Published private(set) var warning: String?
+    /// True whenever `CaptureEngine.state == .unavailable` for ANY reason (permission denied, no
+    /// camera present, couldn't open the device, etc.) — Task 20's `OnboardingView` needs this
+    /// specifically, not the merged `warning`, because `warning` can also carry the unrelated
+    /// Accessibility message (see `recomputeWarning()`) even while the camera itself is fine, and
+    /// `glyphState == .paused` alone can't distinguish "capture hasn't been started yet" from
+    /// "capture failed to start" — both collapse to the same resting glyph state.
+    @Published private(set) var isCameraUnavailable = false
     @Published private(set) var lastEvent: GestureEvent?
     @Published private(set) var latestFrame: LandmarkFrame?
     /// Task 19's perform-to-preview: a raw, arbitration-BYPASSING candidate published once per
@@ -245,8 +252,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
             captureWarning = reason == "Camera access denied"
                 ? "Camera access needed — open System Settings"
                 : reason
+            isCameraUnavailable = true
         case .running, .paused:
             captureWarning = nil
+            isCameraUnavailable = false
         }
         recomputeWarning()
     }
