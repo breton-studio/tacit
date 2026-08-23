@@ -77,7 +77,9 @@ final class StubEngine: ObservableObject, EngineUIState {
 @MainActor
 final class PlaceholderEngine: ObservableObject, EngineUIState {
     @Published private(set) var glyphState: GlyphState = .paused
-    @Published var isEnabled: Bool = true
+    // Matches `glyphState == .paused` above — a release build must not show a "Paused" header
+    // next to a "Tacit is watching" master toggle.
+    @Published var isEnabled: Bool = false
     @Published private(set) var warning: String? = nil
 
     func pause(for duration: TimeInterval) {
@@ -217,13 +219,10 @@ struct MenuBarGlyphView: View {
         }
         withAnimation(animation) { pulseScale = 1.06 }
         Task {
-            // `Animation` doesn't expose its spring duration introspectably, so this mirrors
-            // `TacitMotion.armedPulse`'s duration (0.30s) by name rather than a bare literal —
-            // the scale-up leg must finish before the scale-down leg starts.
-            try? await Task.sleep(for: Self.armedPulseDuration)
+            // The scale-up leg must finish before the scale-down leg starts; `TacitMotion` is the
+            // single source of truth for that duration (see `armedPulseDuration`'s doc comment).
+            try? await Task.sleep(for: .seconds(TacitMotion.armedPulseDuration))
             withAnimation(animation) { pulseScale = 1.0 }
         }
     }
-
-    private static let armedPulseDuration: Duration = .seconds(0.30)
 }
