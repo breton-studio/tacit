@@ -9,7 +9,10 @@ import TacitCore
 struct CardDetailView: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
-    var engine: TacitEngine
+    // `@ObservedObject`, not a plain `var`: Task 19's perform-to-preview needs this view to
+    // re-render on `engine.previewCandidate` (lights the constellation below) and `engine.glyphState`
+    // (the strip's paused affordance) changes.
+    @ObservedObject var engine: TacitEngine
     var namespace: Namespace.ID
     var onDone: () -> Void
 
@@ -23,9 +26,15 @@ struct CardDetailView: View {
                 ConstellationRenderer(
                     frame: entry.cannedFrame,
                     lineWidth: 1.5,
-                    color: .primary,
+                    // Task 19: "lights up" while the user is actually performing this card's
+                    // gesture right now, per `engine.previewCandidate` (arbitration-bypassing, only
+                    // non-nil while the preview strip below is mounted). Accent is sanctioned here —
+                    // this constellation lighting up while its gesture is held IS armed/active
+                    // semantics, the one use `TacitColors.accent` exists for.
+                    color: isPreviewMatched ? TacitColors.accent : .primary,
                     fitToJoints: true
                 )
+                .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: isPreviewMatched)
                 // `isSource: false`: `SpecimenCard`'s constellation is the persisting source for
                 // this id (see its doc comment); this is the target that animates to/from it.
                 .tacitMatchedGeometry(
@@ -109,28 +118,26 @@ struct CardDetailView: View {
         }
     }
 
-    // MARK: - Perform-to-preview (Task 19 mount point)
+    // MARK: - Perform-to-preview (Task 19)
 
-    /// Task 19 fills this region in with a live camera strip + skeleton overlay driven by
-    /// `engine.latestFrame`, lighting up when the user actually performs this gesture (spec §5:
-    /// "teaching and testing in one move"). Left empty and clearly marked; `engine` is threaded
-    /// through this view already so Task 19 has it in hand.
+    /// A live camera strip + skeleton overlay driven by `engine.latestFrame`, lighting the LARGE
+    /// constellation above when the user actually performs this gesture (spec §5: "teaching and
+    /// testing in one move") — Cooper's collapse of thinking and making: you learn a gesture by
+    /// doing it, with instant feedback.
     private var performToPreviewSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("TRY IT")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            // MARK: Task 19 mount point — perform-to-preview (live skeleton, engine.latestFrame)
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                .frame(height: 72)
-                .overlay {
-                    Text("Perform-to-preview arrives later.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            PerformToPreviewStrip(entry: entry, engine: engine)
         }
+    }
+
+    /// Whether the currently-performed gesture (arbitration-bypassing, live) matches this card's
+    /// own `entry.id` — the "lights up" condition for the large constellation above.
+    private var isPreviewMatched: Bool {
+        engine.previewCandidate?.gesture == entry.id
     }
 
     // MARK: - Rows
@@ -164,5 +171,122 @@ struct CardDetailView: View {
                 store.setBinding(updated, for: entry.id)
             }
         )
+    }
+}
+
+/// Task 19's live constellation strip: a fixed-height, quiet region that tracks the user's hand in
+/// real time (`engine.latestFrame`) while this card's detail is open. `engine.isPreviewActive` is
+/// flipped on the instant this strip mounts and off the instant it unmounts (which also happens
+/// when the card detail itself closes, since `LibraryWindow.detailOverlay` tears the whole
+/// `CardDetailView` down along with it) — see `TacitEngine.isPreviewActive`'s doc comment for what
+/// that toggles pipeline-side.
+private struct PerformToPreviewStrip: View {
+    var entry: CatalogEntry
+    @ObservedObject var engine: TacitEngine
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// True once `engine.latestFrame` has been continuously nil for >1s while the strip is
+    /// mounted — shows the "Show your hand to the camera." guidance (requirement 3). Reset to
+    /// `false` the instant a frame arrives.
+    @State private var showGuidance = false
+    private static let noFrameGuidanceDelay: Duration = .seconds(1)
+    @State private var guidanceTask: Task<Void, Never>?
+
+    private static let stripHeight: CGFloat = 120
+    private static let cornerRadius: CGFloat = 12
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .fill(Color.secondary.opacity(0.06))
+
+            if engine.glyphState == .paused {
+                pausedContent
+            } else {
+                liveContent
+            }
+        }
+        .frame(height: Self.stripHeight)
+        .frame(maxWidth: .infinity)
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .onAppear {
+            engine.isPreviewActive = true
+            handleFrameChange(engine.latestFrame)
+        }
+        .onDisappear {
+            engine.isPreviewActive = false
+            guidanceTask?.cancel()
+            guidanceTask = nil
+        }
+        .onChange(of: engine.latestFrame) { _, newFrame in
+            handleFrameChange(newFrame)
+        }
+    }
+
+    /// The actual live strip: the tracked skeleton (position-preserving — `fitToJoints: false`,
+    /// per the Task 8 ruling that "where is my hand" matters here — smoothed with the
+    /// Reduce-Motion-exempt `TacitMotion.liveTracking`), plus the out-of-frame guidance text.
+    @ViewBuilder
+    private var liveContent: some View {
+        ZStack {
+            if let frame = engine.latestFrame {
+                ConstellationRenderer(
+                    frame: frame,
+                    lineWidth: 1.5,
+                    color: .secondary,
+                    fitToJoints: false
+                )
+                .padding(12)
+                // Essential, user-driven state ("where is my hand right now") — applied
+                // unconditionally, NOT via `TacitMotion.respecting(reduceMotion, ...)`: spec §4's
+                // motion table keeps this on even under Reduce Motion.
+                .animation(TacitMotion.liveTracking, value: frame)
+            }
+
+            if showGuidance {
+                Text("Show your hand to the camera.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Capture paused/unavailable (requirement 5): no live claim — the canned frame, dimmed, plus
+    /// plain-verb copy explaining why nothing is tracking.
+    private var pausedContent: some View {
+        ZStack {
+            ConstellationRenderer(
+                frame: entry.cannedFrame,
+                lineWidth: 1.5,
+                color: Color.secondary.opacity(0.35),
+                fitToJoints: true
+            )
+            .padding(12)
+
+            Text("Tacit is paused.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Starts (or cancels) the >1s out-of-frame guidance timer. A frame arriving clears
+    /// `showGuidance` immediately; frames going away starts a fresh 1s countdown (any earlier
+    /// countdown is cancelled first, so a brief flicker in/out of frame doesn't accumulate).
+    private func handleFrameChange(_ frame: LandmarkFrame?) {
+        guidanceTask?.cancel()
+        guard frame == nil else {
+            showGuidance = false
+            return
+        }
+        guidanceTask = Task {
+            try? await Task.sleep(for: Self.noFrameGuidanceDelay)
+            guard !Task.isCancelled else { return }
+            showGuidance = true
+        }
     }
 }

@@ -47,6 +47,35 @@ final class TacitEngine: ObservableObject, EngineUIState {
     @Published private(set) var warning: String?
     @Published private(set) var lastEvent: GestureEvent?
     @Published private(set) var latestFrame: LandmarkFrame?
+    /// Task 19's perform-to-preview: a raw, arbitration-BYPASSING candidate published once per
+    /// frame while `isPreviewActive` is true — nil the rest of the time. This is deliberately not
+    /// `lastEvent`/arbitration-derived: the Library's card detail strip needs to light up the
+    /// instant a gesture is *performed*, with no clutch/arming/debounce in the way.
+    @Published private(set) var previewCandidate: GestureCandidate?
+
+    /// Turns Task 19's perform-to-preview mode on/off. While `true`, `PipelineCore.process` also
+    /// runs preview-scoped detectors and publishes their result via `previewCandidate` each frame;
+    /// while `false` (the default), that extra work never runs, keeping the hot path clean. Settable
+    /// by the UI — `CardDetailView`'s preview strip flips this on `onAppear` and off `onDisappear`
+    /// (and therefore also when the card detail closes, since the strip unmounts with it).
+    var isPreviewActive: Bool = false {
+        didSet {
+            guard isPreviewActive != oldValue else { return }
+            if !isPreviewActive {
+                // Clear immediately rather than waiting for the next frame's generation-guarded
+                // `apply(_:generation:)` to catch up — otherwise a card's constellation could stay
+                // lit for a beat after the strip has already disappeared.
+                previewCandidate = nil
+            }
+            let active = isPreviewActive
+            Task { [pipeline] in
+                // Fresh preview-detector instances are created actor-side on every activation (see
+                // `PipelineCore.setPreviewActive`), so no tap/swipe tracking state leaks between one
+                // card's preview session and the next.
+                await pipeline?.setPreviewActive(active)
+            }
+        }
+    }
 
     let recorder: FixtureRecorder
 
@@ -184,6 +213,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // already in flight, no matter when it resolves.
             pipelineGeneration += 1
             lastArbitrationState = .disarmed
+            // No live frame is coming while capture is stopped: a stale preview candidate must not
+            // keep a card lit (requirement 5 — a paused strip shows the dimmed canned frame only).
+            previewCandidate = nil
             if let pipeline {
                 Task { await pipeline.reset() }
             }
@@ -224,6 +256,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
 
         lastArbitrationState = result.arbitrationState
+
+        // Re-check the MainActor's own `isPreviewActive` (not just whatever this frame's
+        // `PipelineCore` happened to compute) so a preview turned off *after* this frame was
+        // already in flight can't resurrect a stale lit candidate — the same race the `didSet`
+        // above already guards against on the "turn off" side.
+        previewCandidate = isPreviewActive ? result.previewCandidate : nil
 
         if let event = result.event {
             lastEvent = event
@@ -288,27 +326,74 @@ private actor PipelineCore {
     private let classifier = StaticPoseClassifier()
     private let arbitration = ArbitrationEngine()
 
+    /// Task 19's perform-to-preview mode: `false` unless a `CardDetailView` preview strip is
+    /// currently mounted (see `TacitEngine.isPreviewActive`). `previewTapDetector` /
+    /// `previewSwipeDetector` are SEPARATE instances from anything the production arbitration path
+    /// uses (there are none there today — tap/swipe aren't wired into `arbitration` yet) so preview
+    /// state can never cross into or out of the arbitration path.
+    private var previewActive = false
+    private var previewTapDetector = PinchTapDetector()
+    private var previewSwipeDetector = ThumbSwipeDetector()
+
     struct Result: Sendable {
         var frame: LandmarkFrame?
         var arbitrationState: ArbitrationState
         var event: GestureEvent?
+        /// Raw candidate for Task 19's preview strip, bypassing arbitration entirely — nil unless
+        /// `previewActive`. See `process(pixelBuffer:timestamp:)`'s doc comment for precedence.
+        var previewCandidate: GestureCandidate?
     }
 
     /// Runs one captured frame through detection → classification → arbitration. Callers are
     /// expected (by `TacitEngine.start()`'s single consuming `Task`) to await each call to
     /// completion before issuing the next, so this never actually executes concurrently with
     /// itself — but even if it did, actor isolation would serialize it safely.
+    ///
+    /// When `previewActive`, this ALSO runs the frame through preview-scoped
+    /// `PinchTapDetector`/`ThumbSwipeDetector` instances, entirely independent of (and never
+    /// feeding into) `arbitration`. Tap/swipe candidates take precedence over the static
+    /// classifier's `candidate` for the returned `previewCandidate` — mirroring the precedence
+    /// planned for production once tap/swipe join arbitration — falling back to `candidate` when
+    /// neither detector fires this frame.
     func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) async -> Result {
         let frames = await detector.detect(in: pixelBuffer, timestamp: timestamp)
         let frame = frames.first
         let candidate = frame.flatMap(classifier.classify)
         let event = arbitration.ingest(candidate, at: timestamp)
-        return Result(frame: frame, arbitrationState: arbitration.state, event: event)
+
+        var previewCandidate: GestureCandidate?
+        if previewActive, let frame {
+            if let tap = previewTapDetector.ingest(frame) {
+                previewCandidate = tap
+            } else if let swipe = previewSwipeDetector.ingest(frame) {
+                previewCandidate = swipe
+            } else {
+                previewCandidate = candidate
+            }
+        }
+
+        return Result(
+            frame: frame,
+            arbitrationState: arbitration.state,
+            event: event,
+            previewCandidate: previewCandidate
+        )
     }
 
     /// Returns arbitration to `.disarmed` — called when capture stops, so a later resume doesn't
     /// briefly show stale progress from before the pause.
     func reset() {
         arbitration.reset()
+    }
+
+    /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds both
+    /// preview detectors from scratch, so a freshly-opened card never inherits mid-gesture tracking
+    /// state (e.g. a half-completed swipe) left over from whichever card's preview ran before it.
+    func setPreviewActive(_ active: Bool) {
+        previewActive = active
+        if active {
+            previewTapDetector = PinchTapDetector()
+            previewSwipeDetector = ThumbSwipeDetector()
+        }
     }
 }

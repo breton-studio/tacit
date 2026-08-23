@@ -29,6 +29,11 @@ enum TacitMotion {
     /// `Animation.delay(_:)` on top of this token; Reduce Motion drops the stagger (delay 0) but
     /// still plays this same fade.
     static let cardAppear = Animation.easeOut(duration: 0.2)
+    /// Live skeleton tracking (spec §4 motion table): the perform-to-preview strip's per-frame hand
+    /// position smoothing (Task 19). User-driven motion reflecting essential state ("where is my
+    /// hand right now") — deliberately used WITHOUT `respecting(_:_:)` at call sites, since it must
+    /// stay on even under Reduce Motion.
+    static let liveTracking = Animation.interactiveSpring(response: 0.15, dampingFraction: 0.86)
     /// Honor Reduce Motion: returns nil (instant) when reduceMotion is on.
     static func respecting(_ reduceMotion: Bool, _ animation: Animation) -> Animation? {
         reduceMotion ? nil : animation
