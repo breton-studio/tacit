@@ -367,6 +367,14 @@ private actor PipelineCore {
     /// unexpired latch from an earlier firing > the frame's own static `candidate`. A live static
     /// pose (held) is never masked by a stale (expired) latch — the latch is dropped the first
     /// frame it expires and the static candidate takes over immediately.
+    ///
+    /// A frame with no detected hand (`frame == nil`, e.g. a brief occlusion or a relaxed hand
+    /// dropping out of tracking) must NOT bypass the latch: the visible "lit" expression has to
+    /// match the latch's own data lifetime, not the presence of a hand this particular frame. Such
+    /// a frame still carries a real capture timestamp (`timestamp`, the same value `arbitration`
+    /// already receives via `ingest(candidate, at: timestamp)` even when `candidate` is nil), so the
+    /// latch is checked against that instead of `frame.timestamp` when there's no frame to read one
+    /// from.
     func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) async -> Result {
         let frames = await detector.detect(in: pixelBuffer, timestamp: timestamp)
         let frame = frames.first
@@ -374,16 +382,25 @@ private actor PipelineCore {
         let event = arbitration.ingest(candidate, at: timestamp)
 
         var previewCandidate: GestureCandidate?
-        if previewActive, let frame {
-            let momentary = previewTapDetector.ingest(frame) ?? previewSwipeDetector.ingest(frame)
-            if let momentary {
-                previewLatch = (candidate: momentary, expiresAt: frame.timestamp + Self.previewLatchDuration)
-                previewCandidate = momentary
-            } else if let latch = previewLatch, frame.timestamp < latch.expiresAt {
+        if previewActive {
+            if let frame {
+                let momentary = previewTapDetector.ingest(frame) ?? previewSwipeDetector.ingest(frame)
+                if let momentary {
+                    previewLatch = (candidate: momentary, expiresAt: frame.timestamp + Self.previewLatchDuration)
+                    previewCandidate = momentary
+                } else if let latch = previewLatch, frame.timestamp < latch.expiresAt {
+                    previewCandidate = latch.candidate
+                } else {
+                    previewLatch = nil
+                    previewCandidate = candidate
+                }
+            } else if let latch = previewLatch, timestamp < latch.expiresAt {
+                // No hand detected this frame: still honor an unexpired latch (using the frame
+                // callback's own timestamp, since there's no `LandmarkFrame` to read one from) so a
+                // brief occlusion/relax mid-window doesn't flicker the lit card off and back on.
                 previewCandidate = latch.candidate
             } else {
                 previewLatch = nil
-                previewCandidate = candidate
             }
         }
 
