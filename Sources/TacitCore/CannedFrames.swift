@@ -144,11 +144,14 @@ public enum CannedFrames {
     public static let indexPoint: LandmarkFrame =
         assemble(indexExtendedChain, fistedThumb)
 
-    /// Index and middle spread apart, ring/little curled, thumb tucked — the classic victory sign.
+    /// Index and middle forking apart into a real "V" — separation *increases* row by row from
+    /// the MCP knuckle row (~0.16) out to the tips (~0.19, comfortably over the 0.18 floor a real
+    /// V needs) rather than narrowing back toward the center line. Ring/little curled, thumb
+    /// tucked, per the classic victory sign.
     public static let victory: LandmarkFrame = assemble(
         [
-            .indexMCP: jp(0.34, 0.35), .indexPIP: jp(0.40, 0.50), .indexDIP: jp(0.42, 0.58), .indexTip: jp(0.44, 0.65),
-            .middleMCP: jp(0.50, 0.35), .middlePIP: jp(0.52, 0.50), .middleDIP: jp(0.54, 0.58), .middleTip: jp(0.56, 0.65),
+            .indexMCP: jp(0.34, 0.35), .indexPIP: jp(0.335, 0.50), .indexDIP: jp(0.33, 0.58), .indexTip: jp(0.325, 0.65),
+            .middleMCP: jp(0.50, 0.35), .middlePIP: jp(0.505, 0.50), .middleDIP: jp(0.51, 0.58), .middleTip: jp(0.515, 0.65),
             .ringMCP: jp(0.62, 0.35), .ringPIP: jp(0.53, 0.38), .ringDIP: jp(0.53, 0.355), .ringTip: jp(0.53, 0.33),
             .littleMCP: jp(0.70, 0.35), .littlePIP: jp(0.55, 0.39), .littleDIP: jp(0.55, 0.365), .littleTip: jp(0.55, 0.34),
         ],

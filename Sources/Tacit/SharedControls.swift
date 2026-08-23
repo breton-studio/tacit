@@ -5,10 +5,22 @@ extension View {
     /// card ↔ detail expansion (spec §4: Reduce Motion → crossfade, not a geometry morph). This
     /// SDK's `matchedGeometryEffect` has no `isEnabled` parameter of its own, so disabling it means
     /// not applying the modifier at all, which this wraps as one call site.
+    ///
+    /// `isSource` is forwarded straight through and defaults to `true` (matching
+    /// `matchedGeometryEffect`'s own default) — see `SpecimenCard`/`CardDetailView` for the
+    /// "persisting source" convention this app standardizes on: the grid card (which never
+    /// actually leaves the view tree — it just goes to `opacity 0` while expanded) is always
+    /// `isSource: true`; the detail overlay is always `isSource: false`. Docs for
+    /// `matchedGeometryEffect` call out that two co-existing views both defaulting to
+    /// `isSource: true` for the same id resolve to "last one added wins" — insertion-order
+    /// dependent, not something call sites should rely on. Picking one persisting source and one
+    /// following target removes that ambiguity entirely.
     @ViewBuilder
-    func tacitMatchedGeometry(id: some Hashable, in namespace: Namespace.ID, enabled: Bool) -> some View {
+    func tacitMatchedGeometry(
+        id: some Hashable, in namespace: Namespace.ID, enabled: Bool, isSource: Bool = true
+    ) -> some View {
         if enabled {
-            self.matchedGeometryEffect(id: id, in: namespace)
+            self.matchedGeometryEffect(id: id, in: namespace, isSource: isSource)
         } else {
             self
         }

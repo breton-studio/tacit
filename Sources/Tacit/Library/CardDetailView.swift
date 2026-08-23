@@ -26,10 +26,13 @@ struct CardDetailView: View {
                     color: .primary,
                     fitToJoints: true
                 )
+                // `isSource: false`: `SpecimenCard`'s constellation is the persisting source for
+                // this id (see its doc comment); this is the target that animates to/from it.
                 .tacitMatchedGeometry(
                     id: "\(entry.id.rawValue)-constellation",
                     in: namespace,
-                    enabled: !reduceMotion
+                    enabled: !reduceMotion,
+                    isSource: false
                 )
                 .frame(height: 160)
                 .frame(maxWidth: .infinity)
@@ -79,7 +82,9 @@ struct CardDetailView: View {
                 .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion)
+        // `isSource: false` — see `SpecimenCard`'s matching comment: the grid card is the app's
+        // one persisting source of geometry for this id; this container is always the target.
+        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: false)
         .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
     }
 

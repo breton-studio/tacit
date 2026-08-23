@@ -85,6 +85,19 @@ import Testing
     }
 }
 
+@Test func victoryCannedFrameForksOutwardLikeARealV() {
+    // A real "V" separates MORE at the fingertips than at the knuckles — the fork should widen
+    // going out, never narrow back toward the center line (which would read as the fingers
+    // closing back together instead of splaying apart).
+    let frame = CannedFrames.victory
+    func x(_ joint: HandJoint) -> Double { frame.point(joint)!.x }
+    let mcpSeparation = abs(x(.middleMCP) - x(.indexMCP))
+    let tipSeparation = abs(x(.middleTip) - x(.indexTip))
+    #expect(mcpSeparation < 0.18, "MCP row separation \(mcpSeparation) should stay ~0.16")
+    #expect(tipSeparation >= 0.18, "tip separation \(tipSeparation) should be >= 0.18")
+    #expect(tipSeparation > mcpSeparation, "tips (\(tipSeparation)) should separate MORE than MCPs (\(mcpSeparation)), not converge")
+}
+
 @Test func cannedFrameMatchesItsOwnEntryID() {
     // `CatalogEntry.init` derives `cannedFrame` from `CannedFrames.frame(for: id)` — this just
     // guards that indirection against ever drifting (e.g. a future hand-edit that passes a

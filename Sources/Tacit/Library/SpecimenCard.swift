@@ -63,10 +63,18 @@ struct SpecimenCard: View {
                 color: .primary,
                 fitToJoints: true
             )
+            // `isSource: true` (the default, spelled out here to document the choice): the grid
+            // card is the app's one persisting source of geometry for this id — it never leaves
+            // the view tree (see `.opacity(isExpanded ? 0 : 1)` below), so it's always available to
+            // anchor the transition. `CardDetailView`'s matching constellation is the target
+            // (`isSource: false`). Without picking a side, two co-existing `isSource: true` views
+            // resolve to "last one added wins" per `matchedGeometryEffect`'s own docs — order-
+            // dependent, not something to lean on.
             .tacitMatchedGeometry(
                 id: "\(entry.id.rawValue)-constellation",
                 in: namespace,
-                enabled: !reduceMotion
+                enabled: !reduceMotion,
+                isSource: true
             )
             .frame(height: 96)
             .frame(maxWidth: .infinity)
@@ -100,7 +108,15 @@ struct SpecimenCard: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .opacity(isExpanded ? 0 : 1)
-        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion)
+        // Same persisting-source convention as the constellation above: the grid card is always
+        // the source, `CardDetailView`'s container is always the target (`isSource: false`).
+        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: true)
+        // The card stays in the tree at opacity 0 while expanded (so it keeps anchoring the
+        // matched-geometry source above) — it must not still act like a visible, tappable card:
+        // no hit-testing, no keyboard focus, and hidden from VoiceOver so assistive tech doesn't
+        // land on an invisible duplicate of the (now-visible) detail view.
+        .allowsHitTesting(!isExpanded)
+        .accessibilityHidden(isExpanded)
         .onHover { hovering in
             withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback)) {
                 isHovered = hovering
@@ -111,8 +127,9 @@ struct SpecimenCard: View {
         // must be reachable by Tab and activatable without a mouse. `.focusable()` gives it a
         // system focus ring; Return/Space open detail the same way a click does. The nested toggle
         // row's own `.onTapGesture` (`TacitToggleStyle`) still wins hit-testing within its own
-        // bounds, so this doesn't intercept toggle taps.
-        .focusable()
+        // bounds, so this doesn't intercept toggle taps. Not focusable while expanded/hidden, so
+        // Tab can't land on the invisible card underneath the detail view.
+        .focusable(!isExpanded)
         .onKeyPress(.return) { onTap(); return .handled }
         .onKeyPress(.space) { onTap(); return .handled }
         // Not `.accessibilityElement(children: .combine)`: combining would swallow the enable
