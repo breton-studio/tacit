@@ -47,3 +47,52 @@ private func withUniformConfidence(_ frame: LandmarkFrame, confidence: Double) -
     let frame = withUniformConfidence(SyntheticHand.openPalm(), confidence: 0.3)
     #expect(classifier.classify(frame) == nil)
 }
+
+// MARK: - Task 12: indexPoint, victory, thumbsUp
+
+@Test func indexPointClassifiesAsIndexPoint() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.indexPoint(t: 3.5)
+    let candidate = classifier.classify(frame)
+    #expect(candidate?.gesture == .indexPoint)
+    #expect(candidate?.timestamp == 3.5)
+    #expect(candidate?.confidence == HandGeometry.meanConfidence(frame))
+}
+
+@Test func victoryClassifiesAsVictory() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.victory(t: 4.5)
+    let candidate = classifier.classify(frame)
+    #expect(candidate?.gesture == .victory)
+    #expect(candidate?.timestamp == 4.5)
+    #expect(candidate?.confidence == HandGeometry.meanConfidence(frame))
+}
+
+@Test func thumbsUpClassifiesAsThumbsUp() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.thumbsUp(t: 5.5)
+    let candidate = classifier.classify(frame)
+    #expect(candidate?.gesture == .thumbsUp)
+    #expect(candidate?.timestamp == 5.5)
+    #expect(candidate?.confidence == HandGeometry.meanConfidence(frame))
+}
+
+// MARK: - Task 12: confusable checks (priority order: victory > indexPoint > thumbsUp > looseFist > openPalm)
+
+@Test func victoryDoesNotClassifyAsIndexPoint() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.victory()
+    #expect(classifier.classify(frame)?.gesture != .indexPoint)
+}
+
+@Test func thumbsUpDoesNotClassifyAsLooseFist() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.thumbsUp()
+    #expect(classifier.classify(frame)?.gesture != .looseFist)
+}
+
+@Test func typingHandStillClassifiesAsNilWithFullPoseSet() {
+    let classifier = StaticPoseClassifier()
+    let frame = SyntheticHand.typingHand()
+    #expect(classifier.classify(frame) == nil)
+}

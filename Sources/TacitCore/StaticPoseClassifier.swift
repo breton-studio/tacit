@@ -34,10 +34,16 @@ public struct StaticPoseClassifier: Sendable {
         let confidence = HandGeometry.meanConfidence(frame)
         guard confidence >= tuning.minMeanConfidence else { return nil }
 
-        // Ordered rule evaluation: first matching pose wins. Task 12 appends more matchers here.
+        // Ordered rule evaluation: first matching pose wins.
+        // Priority: victory > indexPoint > thumbsUp > looseFist > openPalm.
+        // (thumbsUp must precede looseFist: a thumbsUp frame also satisfies looseFist's
+        // "four fingers curled + thumb away from index" test, so ordering disambiguates it.)
         let matchers: [(LandmarkFrame) -> GestureID?] = [
-            matchOpenPalm,
+            matchVictory,
+            matchIndexPoint,
+            matchThumbsUp,
             matchLooseFist,
+            matchOpenPalm,
         ]
 
         guard let gesture = matchers.lazy.compactMap({ $0(frame) }).first else {
@@ -69,5 +75,42 @@ public struct StaticPoseClassifier: Sendable {
         }
 
         return .looseFist
+    }
+
+    /// Index extended; middle, ring, little not. Thumb state is ignored.
+    private func matchIndexPoint(_ frame: LandmarkFrame) -> GestureID? {
+        guard isExtended(.index, frame) else { return nil }
+        let othersCurled: [Finger] = [.middle, .ring, .little]
+        guard othersCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        return .indexPoint
+    }
+
+    /// Index and middle extended, ring and little not, tips spread apart. Thumb state is ignored.
+    private func matchVictory(_ frame: LandmarkFrame) -> GestureID? {
+        guard isExtended(.index, frame), isExtended(.middle, frame) else { return nil }
+        let othersCurled: [Finger] = [.ring, .little]
+        guard othersCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        guard let tipSpread = HandGeometry.normalizedDistance(.indexTip, .middleTip, in: frame),
+              tipSpread >= tuning.victoryMinTipSpread else {
+            return nil
+        }
+        return .victory
+    }
+
+    /// Thumb extended, index/middle/ring/little not, thumb tip above (screen-up from) the index MCP.
+    private func matchThumbsUp(_ frame: LandmarkFrame) -> GestureID? {
+        let nonThumbCurled: [Finger] = [.index, .middle, .ring, .little]
+        guard nonThumbCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        guard isExtended(.thumb, frame) else { return nil }
+        guard let thumbTip = frame.point(.thumbTip), let indexMCP = frame.point(.indexMCP),
+              thumbTip.y > indexMCP.y else {
+            return nil
+        }
+        return .thumbsUp
+    }
+
+    /// Convenience wrapper over `HandGeometry.isFingerExtended` using this classifier's tuning margin.
+    private func isExtended(_ finger: Finger, _ frame: LandmarkFrame) -> Bool {
+        HandGeometry.isFingerExtended(finger, in: frame, margin: tuning.extensionMargin) == true
     }
 }
