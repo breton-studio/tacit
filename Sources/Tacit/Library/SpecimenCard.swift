@@ -111,11 +111,6 @@ struct SpecimenCard: View {
         // Same persisting-source convention as the constellation above: the grid card is always
         // the source, `CardDetailView`'s container is always the target (`isSource: false`).
         .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: true)
-        // The card stays in the tree at opacity 0 while expanded (so it keeps anchoring the
-        // matched-geometry source above) — it must not still act like a visible, tappable card:
-        // no hit-testing, no keyboard focus, and hidden from VoiceOver so assistive tech doesn't
-        // land on an invisible duplicate of the (now-visible) detail view.
-        .allowsHitTesting(!isExpanded)
         .accessibilityHidden(isExpanded)
         .onHover { hovering in
             withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback)) {
@@ -137,6 +132,15 @@ struct SpecimenCard: View {
         // This keeps every child (name, metadata, toggle) individually accessible while still
         // exposing "open detail" as the container's own default action.
         .accessibilityAction(.default, onTap)
+        // Placed AFTER every interactive modifier above (onHover, onTapGesture, focusable,
+        // onKeyPress) rather than before them: `allowsHitTesting` only blocks hit-testing for
+        // modifiers applied BEFORE it in the chain, so putting it earlier left the tap gesture
+        // reachable in principle (only the detail overlay's z-order was saving it). As the
+        // outermost modifier, it's a self-contained guard — the card stays mounted at opacity 0
+        // (to keep anchoring the matched-geometry source above) but is genuinely untappable,
+        // unhoverable, and unfocusable while its detail is open, independent of what else is
+        // drawn on top of it.
+        .allowsHitTesting(!isExpanded)
     }
 
     @ViewBuilder
