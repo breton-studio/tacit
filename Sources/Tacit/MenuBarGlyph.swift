@@ -44,32 +44,12 @@ enum TacitColors {
     }()
 }
 
-/// The menu bar glyph's identity image: a canned loose-fist `LandmarkFrame`, hand-tuned (in the
-/// same proportions Vision reports for a resting fist — wrist low-center, fingers curled with
-/// tips pulled in near the palm center, thumb tucked to the side) so it reads unambiguously as a
-/// fist in line-art at 18×18. All 21 joints are present (none omitted), each at confidence 0.9 —
-/// there is no "missing joint" degraded-state gap in the glyph itself.
+/// The menu bar glyph's identity image: the canned loose-fist `LandmarkFrame` (single source:
+/// `TacitCore.CannedFrames.looseFist`), hand-tuned so it reads unambiguously as a fist in line-art
+/// at 18×18. All 21 joints are present (none omitted), each at confidence 0.9 — there is no
+/// "missing joint" degraded-state gap in the glyph itself.
 enum MenuBarGlyph {
-    static let fistFrame: LandmarkFrame = {
-        func jp(_ x: Double, _ y: Double) -> JointPoint { JointPoint(x: x, y: y, confidence: 0.9) }
-        // Hand-tuned so the joints' own bounding box is close to square (~0.22 × 0.19) rather
-        // than wide-and-flat: at 18×18 with `fitToJoints`, a near-square bbox reads as a compact
-        // fist blob instead of a splayed hand. Wrist low-center; MCP knuckle row fanning up from
-        // it; each finger's PIP/DIP/tip curled back and pulled in toward a shared point just above
-        // the knuckle row (how Vision actually reports a fist — folded fingers read as ABOVE the
-        // MCP row, not below it); thumb tucked to the side, clear of the curled tips.
-        let joints: [HandJoint: JointPoint] = [
-            .wrist: jp(0.50, 0.16),
-
-            .thumbCMC: jp(0.44, 0.19), .thumbMP: jp(0.40, 0.22), .thumbIP: jp(0.39, 0.20), .thumbTip: jp(0.38, 0.18),
-
-            .indexMCP: jp(0.42, 0.30), .indexPIP: jp(0.49, 0.33), .indexDIP: jp(0.49, 0.315), .indexTip: jp(0.49, 0.30),
-            .middleMCP: jp(0.48, 0.30), .middlePIP: jp(0.505, 0.35), .middleDIP: jp(0.505, 0.335), .middleTip: jp(0.505, 0.32),
-            .ringMCP: jp(0.54, 0.30), .ringPIP: jp(0.52, 0.33), .ringDIP: jp(0.52, 0.315), .ringTip: jp(0.52, 0.30),
-            .littleMCP: jp(0.60, 0.30), .littlePIP: jp(0.535, 0.31), .littleDIP: jp(0.535, 0.295), .littleTip: jp(0.535, 0.28),
-        ]
-        return LandmarkFrame(timestamp: 0, joints: joints, handedness: .right)
-    }()
+    static let fistFrame: LandmarkFrame = CannedFrames.looseFist
 
     /// The stroke/fill color the glyph renders in for a given state (spec §3.7 / §4):
     /// *paused* hollow (secondary, 40% opacity), *watching* full line-art in `.primary`,

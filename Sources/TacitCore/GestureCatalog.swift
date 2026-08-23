@@ -33,6 +33,11 @@ public struct CatalogEntry: Sendable {
     /// True only for `looseFist` (clutch/activation) and `openPalm` (disarm) — the two gestures the
     /// system reserves for itself and never exposes as user-bindable.
     public var isReserved: Bool
+    /// The specimen book's line-art for this gesture (spec §5): a hand-tuned 21-joint frame that
+    /// reads unambiguously as this gesture — the pose itself for a static gesture, or its
+    /// most-legible keyframe for a dynamic one. Always derived from `CannedFrames.frame(for: id)`
+    /// so `id` and `cannedFrame` can never drift out of sync with each other.
+    public var cannedFrame: LandmarkFrame
 
     public init(
         id: GestureID,
@@ -52,6 +57,7 @@ public struct CatalogEntry: Sendable {
         self.falsePositiveRisk = falsePositiveRisk
         self.editorial = editorial
         self.isReserved = isReserved
+        self.cannedFrame = CannedFrames.frame(for: id)
     }
 }
 

@@ -1,10 +1,16 @@
 import SwiftUI
+import TacitCore
 
 @main
 struct TacitApp: App {
     /// The real capture → detection → classification → arbitration pipeline (Task 11). Owns its
     /// own `FixtureRecorder` (below), fed live frames per `TacitEngine`'s concurrency doc comment.
     @StateObject private var engine = TacitEngine()
+    /// The persistent gesture→action mapping store (spec §3.6): one app-lifetime instance, shared
+    /// by the Library window so every specimen card's toggle/binding reads and writes the same
+    /// `mappings.json` — and, once Task 18/20 wire up real dispatch, the same store the
+    /// arbitration/dispatch path will read from.
+    @StateObject private var mappingStore = MappingStore()
 
     var body: some Scene {
         MenuBarExtra {
@@ -21,33 +27,7 @@ struct TacitApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Tacit Library", id: "library") {
-            LibraryPlaceholderView()
+            LibraryWindow(store: mappingStore, engine: engine)
         }
-    }
-}
-
-/// M1 placeholder for the Library window (spec §5's "specimen book" arrives in M2). Polished
-/// anyway, per brief: centered constellation, quiet type, generous spacing — not a bare
-/// "not implemented yet" label.
-private struct LibraryPlaceholderView: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            ConstellationRenderer(
-                frame: MenuBarGlyph.fistFrame,
-                lineWidth: 1.5,
-                color: .secondary,
-                fitToJoints: true
-            )
-            .frame(width: 120, height: 120)
-            .opacity(0.6)
-
-            Text("The Library arrives in M2.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .frame(minWidth: 420, minHeight: 320)
-        .background(.background)
     }
 }

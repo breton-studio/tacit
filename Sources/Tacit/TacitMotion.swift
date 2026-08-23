@@ -23,6 +23,12 @@ enum TacitMotion {
     /// 1→1.06 leg, then 1.06→1). `Animation` doesn't expose its spring duration introspectably, so
     /// this is the single source of truth — MUST be kept equal to `armedPulse`'s `duration: 0.30`.
     static let armedPulseDuration: TimeInterval = 0.30
+    /// Card grid first appearance (spec §4 motion table, "Card grid first appearance" row):
+    /// opacity 0→1 + translateY 8→0, 200 ms ease-out per card. The per-card stagger delay
+    /// (30 ms/card, capped at 300 ms total) is computed at the call site and applied via
+    /// `Animation.delay(_:)` on top of this token; Reduce Motion drops the stagger (delay 0) but
+    /// still plays this same fade.
+    static let cardAppear = Animation.easeOut(duration: 0.2)
     /// Honor Reduce Motion: returns nil (instant) when reduceMotion is on.
     static func respecting(_ reduceMotion: Bool, _ animation: Animation) -> Animation? {
         reduceMotion ? nil : animation

@@ -75,3 +75,21 @@ import Testing
         #expect(entry.id != .looseFist && entry.id != .openPalm)
     }
 }
+
+@Test func everyCatalogEntryHasALegibleCannedFrame() {
+    for entry in GestureCatalog.entries {
+        #expect(
+            entry.cannedFrame.joints.count >= 15,
+            "\(entry.id) cannedFrame has only \(entry.cannedFrame.joints.count) joints, need >= 15"
+        )
+    }
+}
+
+@Test func cannedFrameMatchesItsOwnEntryID() {
+    // `CatalogEntry.init` derives `cannedFrame` from `CannedFrames.frame(for: id)` — this just
+    // guards that indirection against ever drifting (e.g. a future hand-edit that passes a
+    // mismatched frame some other way).
+    for entry in GestureCatalog.entries {
+        #expect(entry.cannedFrame == CannedFrames.frame(for: entry.id))
+    }
+}

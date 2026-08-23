@@ -70,16 +70,16 @@ final class HUDController {
     }
 
     /// Shows (or retargets) the HUD for a fired gesture. `frame` is the live event's landmark
-    /// data if the caller has it; `nil` falls back to the menu bar glyph's canned fist (Task 17
-    /// is expected to add per-gesture canned frames to the catalog — until then this is the one
-    /// canned frame available).
+    /// data if the caller has it; `nil` falls back to that gesture's own canned frame (the same
+    /// `CannedFrames` single source the specimen-book cards use), so the HUD shows the fired
+    /// gesture's actual pose even without a live frame, rather than a generic fist.
     func show(gesture: GestureID, actionSummary: String, frame: LandmarkFrame?) {
         let entry = GestureCatalog.entry(for: gesture)
         present(
             .gesture(
                 displayName: entry.displayName,
                 actionSummary: actionSummary,
-                frame: frame ?? MenuBarGlyph.fistFrame
+                frame: frame ?? entry.cannedFrame
             )
         )
     }

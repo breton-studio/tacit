@@ -2,56 +2,6 @@ import ServiceManagement
 import SwiftUI
 import TacitCore
 
-/// Custom press feedback (spec §4.6 / §4 motion table): every pressable control in the popover
-/// scales to 0.97 on press using `TacitMotion.pressFeedback`, honoring Reduce Motion. Also
-/// enforces the ≥44pt hit-target floor.
-struct TacitButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(Rectangle())
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(
-                TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback),
-                value: configuration.isPressed
-            )
-    }
-}
-
-/// Custom toggle style mirroring `TacitButtonStyle`'s approach: macOS's native `.switch` style
-/// only treats the switch control itself as tappable, and doesn't reliably widen that hit area
-/// just because an outer `.frame`/`.contentShape` says the row is taller — so this style's
-/// `makeBody` owns the full-row layout (label + switch) itself, applies `.contentShape(Rectangle())`
-/// to the WHOLE row, and toggles on any tap within it. The inner `.switch`-styled `Toggle` is kept
-/// purely for its visual (`.allowsHitTesting(false)`) — one hit target, one place state changes.
-struct TacitToggleStyle: ToggleStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        let isOnBinding = Binding(
-            get: { configuration.isOn },
-            set: { configuration.isOn = $0 }
-        )
-        return HStack {
-            configuration.label
-            Spacer(minLength: 8)
-            Toggle("", isOn: isOnBinding)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI)) {
-                configuration.isOn.toggle()
-            }
-        }
-    }
-}
-
 /// The `MenuBarExtra` popover content (spec §3.7 / §7): header with live glyph + state line,
 /// master toggle, pause, launch-at-login, warning row, "Open Library", and quit. Weightless
 /// surface per spec §4.4 — `.ultraThinMaterial`, hairlines, no opaque slabs.
