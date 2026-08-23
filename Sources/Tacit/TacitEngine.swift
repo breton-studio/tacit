@@ -66,6 +66,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// Combine, not via a frame).
     private var lastArbitrationState: ArbitrationState = .disarmed
 
+    /// Bumped every time the pipeline is reset (see `handleCaptureStateChange`). Each in-flight
+    /// `process(...)` call is tagged with the generation current at the moment it was submitted;
+    /// `apply(_:generation:)` drops any result whose tag no longer matches. Without this, a frame
+    /// that started processing right before a pause/reset could resolve *after* the reset and
+    /// briefly resurrect a stale `.armed` arbitration state into the freshly-resumed `.running`
+    /// state — a spurious "armed without a clutch" flash. Tagging at submission (not at the
+    /// pipeline's start()-time constant) is what makes the drop deterministic: it doesn't matter
+    /// how long `process(...)` takes, only whether a reset happened while it was in flight.
+    private var pipelineGeneration = 0
+
     private var cancellables: Set<AnyCancellable> = []
 
     init(recorder: FixtureRecorder = FixtureRecorder()) {
@@ -96,7 +106,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
         guard !hasStarted else { return }
         hasStarted = true
 
-        let (stream, continuation) = AsyncStream<(CVPixelBuffer, TimeInterval)>.makeStream()
+        // `.bufferingNewest(1)` — not the default `.unbounded` — so a Vision stall (or any other
+        // slow frame) drops backlog instead of queueing it: without this, a stall would make the
+        // pipeline dutifully replay every buffered stale frame afterward instead of tracking real
+        // time once it catches up.
+        let (stream, continuation) = AsyncStream<(CVPixelBuffer, TimeInterval)>.makeStream(
+            of: (CVPixelBuffer, TimeInterval).self,
+            bufferingPolicy: .bufferingNewest(1)
+        )
         frameContinuation = continuation
 
         let pipeline = PipelineCore()
@@ -108,9 +125,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         pipelineTask = Task { @MainActor [weak self] in
             for await (pixelBuffer, timestamp) in stream {
-                let result = await pipeline.process(pixelBuffer: pixelBuffer, timestamp: timestamp)
                 guard let self else { return }
-                self.apply(result)
+                // Read the generation *before* the (potentially slow) process() call, so a
+                // reset that happens while this frame is in flight is detected on return — see
+                // `apply(_:generation:)`.
+                let generation = self.pipelineGeneration
+                let result = await pipeline.process(pixelBuffer: pixelBuffer, timestamp: timestamp)
+                self.apply(result, generation: generation)
             }
         }
 
@@ -158,6 +179,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // Capture stopped (paused, interrupted, or unavailable): drop any stale arbitration
             // progress so a later resume starts clean from `.disarmed` rather than momentarily
             // flashing whatever phase (e.g. `.armed`) was in effect right before the pause.
+            // Bumping the generation here — before the reset actually completes on the pipeline
+            // actor — is what lets `apply(_:generation:)` deterministically discard any frame
+            // already in flight, no matter when it resolves.
+            pipelineGeneration += 1
             lastArbitrationState = .disarmed
             if let pipeline {
                 Task { await pipeline.reset() }
@@ -184,7 +209,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     // MARK: - Per-frame pipeline results
 
-    private func apply(_ result: PipelineCore.Result) {
+    /// Applies a `PipelineCore.Result`, unless `generation` (captured when this frame's
+    /// `process(...)` call was *submitted*) no longer matches `pipelineGeneration` — meaning a
+    /// reset happened while this frame was in flight, so its arbitration state is stale and must
+    /// be dropped rather than published. See `pipelineGeneration`'s doc comment.
+    private func apply(_ result: PipelineCore.Result, generation: Int) {
+        guard generation == pipelineGeneration else { return }
+
         if let frame = result.frame {
             latestFrame = frame
             recorder.append(frame)

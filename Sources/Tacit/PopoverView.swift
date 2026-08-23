@@ -126,8 +126,12 @@ struct PopoverView<Engine: EngineUIState>: View {
     }
 
     private var masterToggleRow: some View {
+        // Label text tracks `glyphState`, not `isEnabled` directly: `isEnabled` stays `true`
+        // during a `pause(for:)` (e.g. "Pause for an Hour"), and this row must still read
+        // "Paused" — matching the header — rather than disagreeing with it. The toggle itself
+        // stays bound to `isEnabled`, which is the only thing it's meant to control.
         Toggle(isOn: $engine.isEnabled) {
-            Text(engine.isEnabled ? "Tacit is watching" : "Paused")
+            Text(engine.glyphState == .paused ? "Paused" : "Tacit is watching")
         }
         .toggleStyle(TacitToggleStyle())
     }
