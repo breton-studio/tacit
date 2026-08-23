@@ -110,8 +110,11 @@ private func extendedThumbAt(x: Double, t: TimeInterval) -> LandmarkFrame {
     }
     #expect(emitted.count == 1)
 
-    // Reset: fingers extend (openPalm), breaking the swipe-tracking state.
+    // Reset: fingers extend (openPalm) for two consecutive frames — one frame of "bad" posture
+    // alone is forgiven as jitter tolerance (see `badFrameToleratedMidSwipeStillEmits` /
+    // `twoConsecutiveBadFramesResetTracking` below), so a real reset needs two in a row.
     _ = detector.ingest(SyntheticHand.openPalm(t: 0.8))
+    _ = detector.ingest(SyntheticHand.openPalm(t: 0.85))
 
     // Second swipe, fresh.
     let secondSwipe: [Double] = [0.26, 0.24, 0.22, 0.20]
@@ -122,4 +125,44 @@ private func extendedThumbAt(x: Double, t: TimeInterval) -> LandmarkFrame {
     }
     #expect(emitted.count == 2)
     #expect(emitted.last?.gesture == .thumbSwipeForward)
+}
+
+// MARK: - Review fix: one-frame jitter tolerance on the curled/no-pinch precondition.
+
+@Test func singleBadFrameMidSwipeIsForgivenAndTheSwipeStillEmits() {
+    var detector = ThumbSwipeDetector()
+    var emitted: [GestureCandidate] = []
+
+    for frame in [
+        fistedThumbAt(x: 0.38, t: 0),
+        fistedThumbAt(x: 0.36, t: 0.1),
+        SyntheticHand.openPalm(t: 0.2), // single noise frame: detector jitter, not a real posture change
+        fistedThumbAt(x: 0.34, t: 0.3),
+        fistedThumbAt(x: 0.32, t: 0.4),
+    ] {
+        if let candidate = detector.ingest(frame) { emitted.append(candidate) }
+    }
+
+    #expect(emitted.count == 1)
+    #expect(emitted.first?.gesture == .thumbSwipeForward)
+}
+
+@Test func twoConsecutiveBadFramesResetTrackingAndSuppressTheSwipe() {
+    var detector = ThumbSwipeDetector()
+    var emitted: [GestureCandidate] = []
+
+    for frame in [
+        fistedThumbAt(x: 0.38, t: 0),
+        fistedThumbAt(x: 0.36, t: 0.1),
+        SyntheticHand.openPalm(t: 0.2),
+        SyntheticHand.openPalm(t: 0.3), // second consecutive bad frame: genuine reset
+        fistedThumbAt(x: 0.34, t: 0.4),
+        fistedThumbAt(x: 0.32, t: 0.5),
+    ] {
+        if let candidate = detector.ingest(frame) { emitted.append(candidate) }
+    }
+
+    // Post-reset travel (0.34 -> 0.32, one palm-unit short of minTravel) never crosses the
+    // threshold, and the pre-reset travel (0.38 -> 0.36) was too small either — so nothing fires.
+    #expect(emitted.isEmpty)
 }

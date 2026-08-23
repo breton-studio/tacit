@@ -17,6 +17,11 @@ import Foundation
 /// start emits once; the detector then requires an explicit reset — the thumb going stationary
 /// (small frame-to-frame x movement) or the fingers extending — before it will emit again.
 ///
+/// **Jitter tolerance**: a single frame that fails the curled/no-pinch precondition (or is
+/// missing joints entirely) is forgiven — tracking state is kept and the frame is simply ignored,
+/// so one-off detector noise mid-swipe doesn't wipe out real progress. Two consecutive such
+/// frames are treated as a genuine posture change and fully reset tracking.
+///
 /// Time comes entirely from `frame.timestamp`; this type never calls `Date()`.
 public struct ThumbSwipeDetector: Sendable {
     private let minTravel: Double
@@ -38,6 +43,9 @@ public struct ThumbSwipeDetector: Sendable {
     /// True immediately after an emission, until an explicit reset (stationary thumb or extended
     /// fingers) is observed.
     private var awaitingReset = false
+    /// Consecutive frames that failed the curled/no-pinch precondition (or had missing joints).
+    /// A single one is forgiven as jitter tolerance; see the type's doc comment.
+    private var consecutiveBadFrames = 0
 
     public init(minTravel: Double = 0.35, maxDuration: TimeInterval = 0.5) {
         self.minTravel = minTravel
@@ -49,8 +57,7 @@ public struct ThumbSwipeDetector: Sendable {
     public mutating func ingest(_ frame: LandmarkFrame) -> GestureCandidate? {
         guard let palmSize = HandGeometry.palmSize(frame), palmSize > 0,
               let wrist = frame.point(.wrist), let thumbTip = frame.point(.thumbTip) else {
-            reset()
-            return nil
+            return handleBadFrame()
         }
 
         let nonThumbCurled: [Finger] = [.index, .middle, .ring, .little]
@@ -61,12 +68,14 @@ public struct ThumbSwipeDetector: Sendable {
             <= tuning.pinchCloseThreshold
 
         guard allCurled, !pinchEngaged else {
-            // Fingers extended, or a pinch engaged: not a swipe posture. This also satisfies the
-            // "fingers extended" reset condition, so drop all tracking state.
-            reset()
-            return nil
+            // Fingers extended, or a pinch engaged: not a swipe posture. A lone frame like this
+            // is forgiven as jitter (see `handleBadFrame`); two in a row is a genuine posture
+            // change and fully resets tracking — which also satisfies the "fingers extended"
+            // reset condition.
+            return handleBadFrame()
         }
 
+        consecutiveBadFrames = 0
         let currentX = thumbTip.x
 
         guard let startX = trackingStartX, let startTime = trackingStartTime else {
@@ -105,6 +114,17 @@ public struct ThumbSwipeDetector: Sendable {
         return GestureCandidate(gesture: gesture, confidence: HandGeometry.meanConfidence(frame), timestamp: frame.timestamp)
     }
 
+    /// Counts a frame that failed the curled/no-pinch precondition. The first is forgiven
+    /// (tracking state kept, frame otherwise ignored); the second consecutive one triggers a full
+    /// reset.
+    private mutating func handleBadFrame() -> GestureCandidate? {
+        consecutiveBadFrames += 1
+        if consecutiveBadFrames >= 2 {
+            reset()
+        }
+        return nil
+    }
+
     private mutating func beginTracking(at x: Double, wristX: Double, time: TimeInterval) {
         trackingStartX = x
         trackingStartTime = time
@@ -118,5 +138,6 @@ public struct ThumbSwipeDetector: Sendable {
         wristSignAtStart = 1
         previousX = nil
         awaitingReset = false
+        consecutiveBadFrames = 0
     }
 }

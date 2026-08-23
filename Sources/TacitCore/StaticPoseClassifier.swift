@@ -59,7 +59,21 @@ public struct StaticPoseClassifier: Sendable {
         let allExtended = Finger.allCases.allSatisfy {
             HandGeometry.isFingerExtended($0, in: frame, margin: tuning.extensionMargin) == true
         }
-        return allExtended ? .openPalm : nil
+        guard allExtended else { return nil }
+
+        // A held pinch also reads as "all fingers extended" by the wrist-distance heuristic — the
+        // thumb collapsed onto a target fingertip is still far from the wrist, just like a
+        // genuinely spread-open thumb. Require the thumb to actually be away from the index
+        // fingertip (clearing the pinch-release hysteresis band) so a tap-in-progress can never
+        // masquerade as `.openPalm` — which matters because `.openPalm` is the arbitration
+        // engine's disarm signal: misclassifying a tap as one would disarm the command window on
+        // every tap.
+        guard let thumbIndexDistance = HandGeometry.normalizedDistance(.thumbTip, .indexTip, in: frame),
+              thumbIndexDistance > tuning.pinchOpenThreshold else {
+            return nil
+        }
+
+        return .openPalm
     }
 
     private func matchLooseFist(_ frame: LandmarkFrame) -> GestureID? {
@@ -81,7 +95,7 @@ public struct StaticPoseClassifier: Sendable {
     private func matchIndexPoint(_ frame: LandmarkFrame) -> GestureID? {
         guard isExtended(.index, frame) else { return nil }
         let othersCurled: [Finger] = [.middle, .ring, .little]
-        guard othersCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        guard othersCurled.allSatisfy({ isCurled($0, frame) }) else { return nil }
         return .indexPoint
     }
 
@@ -89,7 +103,7 @@ public struct StaticPoseClassifier: Sendable {
     private func matchVictory(_ frame: LandmarkFrame) -> GestureID? {
         guard isExtended(.index, frame), isExtended(.middle, frame) else { return nil }
         let othersCurled: [Finger] = [.ring, .little]
-        guard othersCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        guard othersCurled.allSatisfy({ isCurled($0, frame) }) else { return nil }
         guard let tipSpread = HandGeometry.normalizedDistance(.indexTip, .middleTip, in: frame),
               tipSpread >= tuning.victoryMinTipSpread else {
             return nil
@@ -100,7 +114,7 @@ public struct StaticPoseClassifier: Sendable {
     /// Thumb extended, index/middle/ring/little not, thumb tip above (screen-up from) the index MCP.
     private func matchThumbsUp(_ frame: LandmarkFrame) -> GestureID? {
         let nonThumbCurled: [Finger] = [.index, .middle, .ring, .little]
-        guard nonThumbCurled.allSatisfy({ !isExtended($0, frame) }) else { return nil }
+        guard nonThumbCurled.allSatisfy({ isCurled($0, frame) }) else { return nil }
         guard isExtended(.thumb, frame) else { return nil }
         guard let thumbTip = frame.point(.thumbTip), let indexMCP = frame.point(.indexMCP),
               thumbTip.y > indexMCP.y else {
@@ -110,7 +124,18 @@ public struct StaticPoseClassifier: Sendable {
     }
 
     /// Convenience wrapper over `HandGeometry.isFingerExtended` using this classifier's tuning margin.
+    /// Missing joints (nil) read as "not extended" — the safe default when a requirement is
+    /// "this finger must be extended."
     private func isExtended(_ finger: Finger, _ frame: LandmarkFrame) -> Bool {
         HandGeometry.isFingerExtended(finger, in: frame, margin: tuning.extensionMargin) == true
+    }
+
+    /// The mirror of `isExtended`, for "this finger must be curled" requirements. Missing joints
+    /// (nil) must NOT satisfy a curled requirement — `isFingerExtended` returning nil means
+    /// "indeterminate," not "confirmed curled," so this checks for the explicit `false` rather
+    /// than negating `isExtended` (negating would make a missing joint read as curled, which is
+    /// exactly backwards: an indeterminate finger should never let a pose match).
+    private func isCurled(_ finger: Finger, _ frame: LandmarkFrame) -> Bool {
+        HandGeometry.isFingerExtended(finger, in: frame, margin: tuning.extensionMargin) == false
     }
 }
