@@ -24,7 +24,13 @@ import Testing
 /// guard against passing through `.looseFist`-adjacent poses. If a false arm shows up, the fix
 /// belongs in the generator (if the excursion is unrealistic) or in tuning (if it's a real
 /// detector sensitivity problem) — never a special case here. See the report for what happened
-/// when this suite was first run.
+/// when this suite was first run, and for a since-corrected mistake: an earlier revision shortened
+/// the jitter's autocorrelation time (to stop it lingering near fist geometry for a clutch-hold's
+/// worth of frames) but shrank the noise's steady-state amplitude by ~43% in the process, which
+/// quietly made the suite *less* likely to ever probe the boundary it exists to police. Both
+/// generators below now decorrelate faster **and** preserve the original steady-state spread —
+/// see `amplitudePreservingStep` — and the disarmed assertions run across an 11-seed sweep rather
+/// than one hand-picked seed, so a single lucky draw can no longer hide a regression.
 struct NegativeSuiteTests {
 
     // MARK: - Deterministic PRNG
@@ -99,28 +105,56 @@ struct NegativeSuiteTests {
         return (events, everArmed)
     }
 
+    // MARK: - Amplitude-preserving AR(1) derivation
+
+    /// For `offset_t = offset_{t-1} * decay + Uniform(-step, step)`, the stationary variance is
+    /// `Var(noise) / (1 - decay^2) = (step^2 / 3) / (1 - decay^2)`, so the steady-state standard
+    /// deviation is `step / sqrt(3 * (1 - decay^2))`.
+    ///
+    /// Given a `referenceStep`/`referenceDecay` pair whose resulting spread is known-good, this
+    /// returns the `step` to use at a *different* `newDecay` that reproduces the exact same
+    /// steady-state std. Used to shorten the jitter's autocorrelation time (see
+    /// `syntheticTypingStream`'s doc comment) without also — as an unintended side effect —
+    /// shrinking how far the walk actually wanders.
+    static func amplitudePreservingStep(referenceStep: Double, referenceDecay: Double, newDecay: Double) -> Double {
+        let referenceStd = referenceStep / (3 * (1 - referenceDecay * referenceDecay)).squareRoot()
+        return referenceStd * (3 * (1 - newDecay * newDecay)).squareRoot()
+    }
+
     // MARK: - Synthetic typing stream (60 s @ 15 Hz)
 
     /// ~15 Hz, 60 s → 900 frames jittering `SyntheticHand.typingHand`.
     ///
     /// Per joint, per axis, an AR(1) mean-reverting random walk: `offset = offset * decay +
-    /// noise`, with `noise` drawn uniformly from `[-step, step]` (`step = 0.03`, the per-frame cap
-    /// asked for) and `decay = 0.4`. Mean-reversion keeps the walk's steady-state spread
-    /// realistic — real typing jitter hovers around a rest position rather than drifting across
-    /// the frame over a full minute — while every individual step is still genuinely random and
-    /// unconstrained; nothing here steers away from fist-adjacent geometry.
+    /// noise`, with `noise` drawn uniformly from `[-step, step]` and `decay = 0.4`.
     ///
-    /// `decay` was tuned down from an initial `0.85`: at `0.85` the walk's autocorrelation time
-    /// (~1/(1-decay) ≈ 6.7 frames ≈ 0.44 s) happened to land almost exactly on
-    /// `ArbitrationTuning.clutchHold` (0.4 s default), so whenever noise pushed the thumb far
+    /// **History, corrected.** The first version used `decay = 0.85`, `step = 0.03` (the ±0.03
+    /// per-frame cap originally asked for). At `decay = 0.85` the walk's autocorrelation time
+    /// (`1/(1-decay) ≈ 6.7` frames `≈ 0.44s`) happened to land almost exactly on
+    /// `ArbitrationTuning.clutchHold` (0.4s default), so whenever noise pushed the thumb far
     /// enough from the index tip to read as "not pinched," the same slow-moving noise tended to
     /// *stay* there for roughly a clutch-hold's worth of frames — a false arm, confirmed at
-    /// t≈53.1s in the first run of this suite. That stickiness is an artifact of the noise model,
-    /// not a realistic feature of typing: a hand actively typing changes its instantaneous finger
-    /// configuration many times over 400ms, it doesn't hold quasi-static for that long. `0.4`
-    /// keeps the same per-step cap and a comparable steady-state spread while decorrelating in
-    /// ~1.7 frames (~0.11s) — far below the clutch hold — which is the honest fix: a shorter,
-    /// more realistic noise timescale, not a rule that detects and dodges fist geometry.
+    /// t≈53.1s in the first run of this suite (single default seed). The fix at the time lowered
+    /// `decay` to `0.4` (autocorrelation ≈1.7 frames ≈0.11s, well below the clutch hold) but kept
+    /// `step = 0.03` unchanged, on the claimed grounds that this preserved "a comparable
+    /// steady-state spread." **That claim was wrong** — steady-state std scales as
+    /// `step / sqrt(1 - decay^2)`, so dropping decay from 0.85 to 0.4 at a fixed step shrank the
+    /// std from ≈0.033 to ≈0.019 (≈43% smaller). An 11-seed sweep at those (wrong) parameters
+    /// found 0/11 seeds coming within 2 frames of the arming boundary — the suite had gone quiet
+    /// not because typing jitter is safe, but because the generator's amplitude had been
+    /// accidentally muted. The *same* sweep at `decay = 0.85` (correct amplitude, slow
+    /// autocorrelation) found 4/11 seeds crossing the 7-consecutive-frame arm threshold.
+    ///
+    /// The honest fix keeps the shorter, more realistic autocorrelation (a hand actively typing
+    /// changes its instantaneous finger configuration many times over 400ms; it doesn't hold
+    /// quasi-static that long) but **compensates the step size** via `amplitudePreservingStep` so
+    /// the steady-state std matches the original `decay=0.85, step=0.03` process (~0.033
+    /// normalized) exactly. That does mean the effective per-frame step is now larger than the
+    /// original ±0.03 ask (~±0.052) — that trade is deliberate and necessary: decorrelating faster
+    /// while preserving amplitude *requires* a bigger per-step kick, by the formula above. Capping
+    /// the step at 0.03 while also demanding fast decorrelation is mathematically impossible to
+    /// combine with "same real-world spread," so the amplitude constraint (matching genuine
+    /// finger-jitter magnitude) wins over the literal step-size number.
     ///
     /// ~10% of frames additionally drop 2-4 random joints (simulating brief tracking loss), and
     /// every 4 s the stream interleaves a ~0.6 s triangular "half-open drift" — hand relaxing or
@@ -131,7 +165,7 @@ struct NegativeSuiteTests {
         let dt: TimeInterval = 1.0 / 15.0
         let frameCount = 900
         let decay = 0.4
-        let step = 0.03
+        let step = Self.amplitudePreservingStep(referenceStep: 0.03, referenceDecay: 0.85, newDecay: decay)
 
         let baseFrame = SyntheticHand.typingHand()
         let openFrame = SyntheticHand.openPalm()
@@ -201,13 +235,17 @@ struct NegativeSuiteTests {
     /// *armed*). On top of that, the whole hand translates: a slow ~11-13 s pan across the frame
     /// plus a faster ~1.3-1.7 s wave-like oscillation, both applied rigidly to every joint. A
     /// smaller AR(1) per-joint jitter (same mean-reverting model as the typing stream, smaller
-    /// step) rides on top for realism.
+    /// reference amplitude) rides on top for realism. Same `decay = 0.4` +
+    /// `amplitudePreservingStep` treatment as `syntheticTypingStream` — see its doc comment for
+    /// the derivation and the amplitude-shrinking mistake it corrects; here the reference process
+    /// is `decay=0.85, step=0.015` (this stream's original, smaller jitter amplitude) rather than
+    /// the typing stream's `0.03`.
     static func syntheticConversationStream(seed: UInt64 = 0xC0FF_EE00_1234_5678) -> [LandmarkFrame] {
         var rng = SeededGenerator(seed: seed)
         let dt: TimeInterval = 1.0 / 15.0
         let frameCount = 450
-        let decay = 0.4 // see syntheticTypingStream's doc comment for why not 0.85
-        let jitterStep = 0.015
+        let decay = 0.4
+        let jitterStep = Self.amplitudePreservingStep(referenceStep: 0.015, referenceDecay: 0.85, newDecay: decay)
 
         let closedFrame = SyntheticHand.typingHand()
         let openFrame = SyntheticHand.openPalm()
@@ -312,22 +350,80 @@ struct NegativeSuiteTests {
         return frames
     }
 
-    // MARK: - Disarmed assertions: zero events, engine never reaches .armed
+    // MARK: - Seed sweep (a single seed can get lucky; a fixed panel can't)
 
-    @Test func syntheticTypingStreamNeverFiresOrArmsWhileDisarmed() {
-        let frames = Self.syntheticTypingStream()
+    /// 11 fixed, arbitrary-but-deterministic seeds. Every disarmed assertion below runs across
+    /// all of them (Swift Testing parameterized `@Test(arguments:)`) instead of trusting one
+    /// hand-picked seed — the exact gap that let the amplitude-shrinking generator bug (see
+    /// `syntheticTypingStream`'s doc comment) go undetected: at the wrong parameters 0/11 seeds
+    /// came within 2 frames of the arm threshold, while the amplitude-corrected generator below
+    /// is judged by the same 11-seed panel.
+    static let sweepSeeds: [UInt64] = [
+        0x7E17_1116_1DEA_1001,
+        0x0000_0000_0000_0001,
+        0x1234_5678_9ABC_DEF0,
+        0xDEAD_BEEF_CAFE_F00D,
+        0x9E37_79B9_7F4A_7C15,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0x0BAD_F00D_600D_C0DE,
+        0x5EED_5EED_5EED_5EED,
+        0xA5A5_A5A5_5A5A_5A5A,
+        0x1111_2222_3333_4444,
+        0x8888_7777_6666_5555,
+    ]
+
+    // MARK: - Disarmed assertions: zero events, engine never reaches .armed, across the seed sweep
+
+    @Test(arguments: Self.sweepSeeds)
+    func syntheticTypingStreamNeverFiresOrArmsWhileDisarmed(seed: UInt64) {
+        let frames = Self.syntheticTypingStream(seed: seed)
         let engine = ArbitrationEngine()
         let result = Self.replayThroughFullChain(frames: frames, engine: engine)
-        #expect(result.events.isEmpty)
-        #expect(!result.everArmed)
+        #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired an event while disarmed")
+        #expect(!result.everArmed, "seed 0x\(String(seed, radix: 16)) armed the clutch while disarmed")
     }
 
-    @Test func syntheticConversationStreamNeverFiresOrArmsWhileDisarmed() {
-        let frames = Self.syntheticConversationStream()
+    @Test(arguments: Self.sweepSeeds)
+    func syntheticConversationStreamNeverFiresOrArmsWhileDisarmed(seed: UInt64) {
+        let frames = Self.syntheticConversationStream(seed: seed)
         let engine = ArbitrationEngine()
         let result = Self.replayThroughFullChain(frames: frames, engine: engine)
-        #expect(result.events.isEmpty)
-        #expect(!result.everArmed)
+        #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired an event while disarmed")
+        #expect(!result.everArmed, "seed 0x\(String(seed, radix: 16)) armed the clutch while disarmed")
+    }
+
+    /// Non-failing diagnostic: for every sweep seed, prints whether the stream ever armed/fired
+    /// and the closest it ever came to arming (`maxArmingProgress`, 0...1 — 1.0 means it armed).
+    /// This is the data behind the per-seed table in the task report; the pass/fail judgment
+    /// itself lives in the two `@Test(arguments:)` functions above.
+    @Test func seedSweepDiagnostics() {
+        for seed in Self.sweepSeeds {
+            for (label, frames) in [
+                ("typing", Self.syntheticTypingStream(seed: seed)),
+                ("conversation", Self.syntheticConversationStream(seed: seed)),
+            ] {
+                let classifier = StaticPoseClassifier()
+                var tapDetector = PinchTapDetector()
+                var swipeDetector = ThumbSwipeDetector()
+                let engine = ArbitrationEngine()
+                var everArmed = false
+                var everFired = false
+                var maxProgress = 0.0
+                for frame in frames {
+                    let poseCandidate = classifier.classify(frame)
+                    let tapCandidate = tapDetector.ingest(frame)
+                    let swipeCandidate = swipeDetector.ingest(frame)
+                    let candidate = tapCandidate ?? swipeCandidate ?? poseCandidate
+                    if engine.ingest(candidate, at: frame.timestamp) != nil { everFired = true }
+                    switch engine.state {
+                    case .armed: everArmed = true
+                    case .arming(let progress): maxProgress = max(maxProgress, progress)
+                    case .disarmed: break
+                    }
+                }
+                print("[NegativeSuiteTests] sweep seed=0x\(String(seed, radix: 16)) stream=\(label): everArmed=\(everArmed) everFired=\(everFired) maxArmingProgress=\(String(format: "%.3f", maxProgress))")
+            }
+        }
     }
 
     @Test func recordedTypingNegativeFixturesNeverFireOrArmWhileDisarmed() {
