@@ -1,3 +1,4 @@
+import ApplicationServices
 import Combine
 import CoreVideo
 import Foundation
@@ -88,7 +89,22 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private var pipelineTask: Task<Void, Never>?
     private var fireResetTask: Task<Void, Never>?
     private var pauseResumeTask: Task<Void, Never>?
+    private var accessibilityCheckTask: Task<Void, Never>?
     private var hasStarted = false
+    private var hasAttachedMappingStore = false
+
+    /// The two components `warning` is derived from (spec §6): a camera-side message (from
+    /// `CaptureState`) and an Accessibility-side message (from `attachMappingStore`'s polling).
+    /// Kept separate rather than overwriting one `warning` in place so neither source can clobber
+    /// the other's message — `recomputeWarning()` is the only place they're combined, camera
+    /// taking priority since a camera problem blocks everything downstream of it.
+    private var captureWarning: String?
+    private var accessibilityWarning: String?
+    /// True while at least one ENABLED binding's action `requiresAccessibility` — recomputed
+    /// whenever `MappingStore.bindings` changes (see `attachMappingStore`). Kept as a stored flag
+    /// (rather than re-scanning bindings on every 5 s poll tick) so the poll loop only ever has to
+    /// ask one question: is Accessibility trusted right now.
+    private var enabledKeystrokeBindingExists = false
 
     /// Latest arbitration phase seen from the pipeline, kept outside `PipelineCore` so
     /// `recomputeGlyphState()` can be driven by capture-state changes too (which arrive via
@@ -226,12 +242,63 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private func updateWarning(for state: CaptureState) {
         switch state {
         case .unavailable(let reason):
-            warning = reason == "Camera access denied"
+            captureWarning = reason == "Camera access denied"
                 ? "Camera access needed — open System Settings"
                 : reason
         case .running, .paused:
-            warning = nil
+            captureWarning = nil
         }
+        recomputeWarning()
+    }
+
+    /// `warning`'s single point of combination (spec §6): a camera problem takes priority — it
+    /// blocks recognition entirely, whereas the Accessibility gap only disables keystroke actions
+    /// specifically — so it's shown first if both are true at once.
+    private func recomputeWarning() {
+        warning = captureWarning ?? accessibilityWarning
+    }
+
+    // MARK: - Accessibility warning (spec §6, Task 20)
+
+    /// Wires the persistent mapping store so `warning` can also surface "Keystroke actions need
+    /// Accessibility" (spec §6's Accessibility row) at the app level, not just on individual
+    /// Library cards (see `ActionBinderView.accessibilityNotice`). Called once from `TacitApp`
+    /// alongside `start()`; safe to call more than once (only the first call has any effect),
+    /// matching `start()`'s own idempotence.
+    ///
+    /// Recompute strategy (documented choice, brief gives two acceptable options): a periodic 5 s
+    /// poll while any enabled binding requires Accessibility, PLUS an immediate recompute whenever
+    /// `MappingStore.bindings` itself changes (enabling/disabling/rebinding a keystroke gesture
+    /// shouldn't wait up to 5 s to show or clear the warning). `AXIsProcessTrusted()` has no
+    /// publisher of its own, so polling is the only way to notice a grant/revoke made in System
+    /// Settings while Tacit keeps running.
+    func attachMappingStore(_ store: MappingStore) {
+        guard !hasAttachedMappingStore else { return }
+        hasAttachedMappingStore = true
+
+        store.$bindings
+            .sink { [weak self] bindings in
+                guard let self else { return }
+                self.enabledKeystrokeBindingExists = bindings.values.contains {
+                    $0.enabled && ($0.action?.requiresAccessibility ?? false)
+                }
+                self.recomputeAccessibilityWarning()
+            }
+            .store(in: &cancellables)
+
+        accessibilityCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.recomputeAccessibilityWarning()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func recomputeAccessibilityWarning() {
+        accessibilityWarning = (enabledKeystrokeBindingExists && !AXIsProcessTrusted())
+            ? "Keystroke actions need Accessibility"
+            : nil
+        recomputeWarning()
     }
 
     private func isRunning(_ state: CaptureState) -> Bool {

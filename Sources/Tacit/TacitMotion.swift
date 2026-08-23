@@ -29,6 +29,12 @@ enum TacitMotion {
     /// `Animation.delay(_:)` on top of this token; Reduce Motion drops the stagger (delay 0) but
     /// still plays this same fade.
     static let cardAppear = Animation.easeOut(duration: 0.2)
+    /// The "beat" the onboarding clutch-teaching step (spec §4 motion table, "Onboarding clutch
+    /// success" row's trigger/aftermath) holds on the signature moment before auto-advancing to
+    /// the next step — long enough to actually register the accent bloom/"Armed." text, short
+    /// enough that it doesn't read as a stall. Sanctioned addition per Task 20's brief, mirroring
+    /// `hudDwell` above: a single source of truth for a choreography timing, not a call-site literal.
+    static let onboardingClutchAdvanceDelay: Duration = .milliseconds(900)
     /// Live skeleton tracking (spec §4 motion table): the perform-to-preview strip's per-frame hand
     /// position smoothing (Task 19). User-driven motion reflecting essential state ("where is my
     /// hand right now") — deliberately used WITHOUT `respecting(_:_:)` at call sites, since it must

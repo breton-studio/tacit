@@ -180,7 +180,11 @@ struct CardDetailView: View {
 /// when the card detail itself closes, since `LibraryWindow.detailOverlay` tears the whole
 /// `CardDetailView` down along with it) — see `TacitEngine.isPreviewActive`'s doc comment for what
 /// that toggles pipeline-side.
-private struct PerformToPreviewStrip: View {
+///
+/// Not `private` (Task 20): `OnboardingView`'s "Learn the Clutch" step reuses this exact view —
+/// passing `GestureCatalog.entry(for: .looseFist)` as `entry` — rather than duplicating the strip's
+/// live-tracking/paused/out-of-frame-guidance logic for a second call site.
+struct PerformToPreviewStrip: View {
     var entry: CatalogEntry
     @ObservedObject var engine: TacitEngine
 

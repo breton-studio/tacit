@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import SwiftUI
 import TacitCore
@@ -18,6 +19,13 @@ struct ActionBinderView: View {
     @ObservedObject var store: MappingStore
 
     @State private var selectedKind: ActionKind
+    /// Task 20 (spec §6): whether Accessibility is currently trusted, polled while this view is
+    /// visible so `accessibilityNotice` below reflects a grant/revoke made in System Settings
+    /// without requiring the card to be closed and reopened. `AXIsProcessTrusted()` has no
+    /// publisher of its own — UI-layer polling is the documented approach (see
+    /// `OnboardingView`'s Accessibility step for the same pattern).
+    @State private var isAccessibilityTrusted = AXIsProcessTrusted()
+    @State private var accessibilityPollTask: Task<Void, Never>?
 
     init(entry: CatalogEntry, store: MappingStore) {
         self.entry = entry
@@ -38,6 +46,8 @@ struct ActionBinderView: View {
 
             currentBindingRow
 
+            accessibilityNotice
+
             switch selectedKind {
             case .keystroke:
                 KeystrokeBinder(entry: entry, store: store)
@@ -48,6 +58,11 @@ struct ActionBinderView: View {
             case .runShortcut:
                 ShortcutBinder(entry: entry, store: store)
             }
+        }
+        .onAppear { startAccessibilityPolling() }
+        .onDisappear {
+            accessibilityPollTask?.cancel()
+            accessibilityPollTask = nil
         }
     }
 
@@ -62,6 +77,44 @@ struct ActionBinderView: View {
                     .foregroundStyle(.secondary)
                 Text("fires → \(action.summary)")
                     .font(.callout)
+            }
+        }
+    }
+
+    /// Spec §6 / Task 20 requirement 3: when the CURRENT (stored) binding is a keystroke and
+    /// Accessibility isn't trusted, a quiet one-line notice + re-grant button — regardless of
+    /// which action-kind segment happens to be selected right now, since the binding that will
+    /// actually fire is the stored one, not whatever the picker is previewing.
+    @ViewBuilder
+    private var accessibilityNotice: some View {
+        if isKeystrokeBound, !isAccessibilityTrusted {
+            HStack(spacing: 8) {
+                Text("Keystroke actions need Accessibility.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("Grant Access…") { requestAccessibilityAccess() }
+                    .buttonStyle(TacitButtonStyle())
+                    .frame(width: 140)
+            }
+        }
+    }
+
+    private var isKeystrokeBound: Bool {
+        if case .keystroke = store.binding(for: entry.id).action { return true }
+        return false
+    }
+
+    private func requestAccessibilityAccess() {
+        AccessibilityPermission.requestPromptIfNeeded()
+    }
+
+    private func startAccessibilityPolling() {
+        accessibilityPollTask?.cancel()
+        accessibilityPollTask = Task {
+            while !Task.isCancelled {
+                isAccessibilityTrusted = AXIsProcessTrusted()
+                try? await Task.sleep(for: .seconds(1))
             }
         }
     }

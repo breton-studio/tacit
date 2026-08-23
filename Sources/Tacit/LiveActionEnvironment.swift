@@ -1,4 +1,4 @@
-import ApplicationServices
+@preconcurrency import ApplicationServices
 import AppKit
 import TacitCore
 
@@ -43,5 +43,25 @@ enum LiveActionEnvironment {
             },
             isAccessibilityTrusted: { AXIsProcessTrusted() }
         )
+    }
+}
+
+/// Prompts the user for Accessibility access (spec §7's `AXIsProcessTrustedWithOptions`) if not
+/// already granted — shared by `OnboardingView`'s Accessibility step and the Library's
+/// keystroke-card notice (`ActionBinderView`, Task 20), so both places request access the exact
+/// same way instead of duplicating the call.
+///
+/// `kAXTrustedCheckOptionPrompt` is declared as a plain (non-`Sendable`) global `CFString` var in
+/// the ApplicationServices C header, so Swift 6's strict concurrency checker flags even a read of
+/// it as unsafe shared mutable state. `nonisolated(unsafe)` documents that this is fine in
+/// practice — it's an OS-provided constant, never mutated after load — mirroring the same escape
+/// hatch `CaptureEngine`/`FixtureRecorder` already use elsewhere in this codebase for SDK globals
+/// the compiler can't see are safe.
+enum AccessibilityPermission {
+    private nonisolated(unsafe) static let promptOptionKey = kAXTrustedCheckOptionPrompt
+
+    static func requestPromptIfNeeded() {
+        let key = promptOptionKey.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 }
