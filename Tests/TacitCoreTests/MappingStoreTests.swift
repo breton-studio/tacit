@@ -47,9 +47,20 @@ private func makeTempDirectory() -> URL {
 }
 
 @MainActor
-@Test func defaultBindingsCoverAllTwentyOneGestureIDs() {
+@Test func defaultBindingsCoverAllTwentyThreeGestureIDs() {
     let defaults = MappingStore.defaultBindings()
     #expect(Set(defaults.keys) == Set(GestureID.allCases))
+}
+
+@MainActor
+@Test func rotateAndScrollSplitIDsHaveExpectedDisabledDefaults() {
+    let store = MappingStore(directory: makeTempDirectory())
+    #expect(store.binding(for: .twoFingerScrollUp) ==
+        GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: []))))
+    #expect(store.binding(for: .twoFingerScrollDown) ==
+        GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: []))))
+    #expect(store.binding(for: .wristRotateCW) == GestureBinding(enabled: false, action: nil))
+    #expect(store.binding(for: .wristRotateCCW) == GestureBinding(enabled: false, action: nil))
 }
 
 // MARK: - Persistence
@@ -87,6 +98,47 @@ private func makeTempDirectory() -> URL {
     #expect(store2.binding(for: .looseFist) == GestureBinding(enabled: true, action: nil))
 }
 
+// MARK: - Schema v1 -> v2 migration
+
+/// A hand-built v1 wire file: `bindings` keyed by raw `String` rather than `GestureID`, since a
+/// real v1 file may contain `wristRotate`/`twoFingerScroll` keys that no longer exist as
+/// `GestureID` cases. Mirrors `MappingStore`'s own private `MappingsFileV1` shape so the encoded
+/// JSON is exactly what a real pre-migration `mappings.json` would contain.
+private struct V1MappingsFile: Codable {
+    var version: Int
+    var bindings: [String: GestureBinding]
+}
+
+@MainActor
+@Test func v1FileMigratesToV2DroppingRemovedKeysAndKeepingTheRest() throws {
+    let dir = makeTempDirectory()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fileURL = dir.appendingPathComponent("mappings.json")
+
+    let victoryBinding = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))
+    let v1 = V1MappingsFile(version: 1, bindings: [
+        "wristRotate": GestureBinding(enabled: true, action: nil),
+        "victory": victoryBinding,
+    ])
+    try JSONEncoder().encode(v1).write(to: fileURL)
+
+    let store = MappingStore(directory: dir)
+
+    // The surviving binding carried forward intact.
+    #expect(store.binding(for: .victory) == victoryBinding)
+
+    // The removed ID's binding is gone; the new split IDs fall back to their disabled defaults,
+    // not to whatever `wristRotate` used to be.
+    #expect(store.binding(for: .wristRotateCW).enabled == false)
+    #expect(store.binding(for: .wristRotateCCW).enabled == false)
+
+    // Re-persisted on disk as version 2, with no wristRotate* key surviving.
+    let onDisk = try JSONDecoder().decode(V1MappingsFile.self, from: Data(contentsOf: fileURL))
+    #expect(onDisk.version == 2)
+    #expect(!onDisk.bindings.keys.contains { $0.hasPrefix("wristRotate") })
+    #expect(onDisk.bindings["victory"] == victoryBinding)
+}
+
 // MARK: - Corruption recovery
 
 @MainActor
@@ -114,7 +166,7 @@ private func makeTempDirectory() -> URL {
     let dir = makeTempDirectory()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let fileURL = dir.appendingPathComponent("mappings.json")
-    let futureFormat = "{\"version\": 2, \"bindings\": {}}"
+    let futureFormat = "{\"version\": 99, \"bindings\": {}}"
     try Data(futureFormat.utf8).write(to: fileURL)
 
     let store = MappingStore(directory: dir)

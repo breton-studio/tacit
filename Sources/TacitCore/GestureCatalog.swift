@@ -65,9 +65,10 @@ public struct CatalogEntry: Sendable {
 /// metadata (comfort, false-positive risk, tier) and the quiet prose that explains why it belongs
 /// where it does. Sourced entirely from `docs/research/LowFatigue-Economic-Hand-Gestures.md`.
 public enum GestureCatalog {
-    /// All 21 gestures, in spec §5 order: the eight static workhorses followed by the thumb-swipe
-    /// pair (report gesture #9, split into two `GestureID`s), then occasional 9–17 minus the swipe
-    /// pair, then the three deliberate free-air gestures.
+    /// All 23 gestures, in spec §5 order: the eight static workhorses followed by the thumb-swipe
+    /// pair (report gesture #9, split into two `GestureID`s), then occasional 10–17 with the
+    /// wrist-rotate and two-finger-scroll gestures each split into a directional pair (the same
+    /// precedent as the #9 thumb-swipe split), then the three deliberate free-air gestures.
     public static let entries: [CatalogEntry] = [
         // MARK: Workhorses (report gestures 1–8, plus the #9 thumb-swipe pair)
         CatalogEntry(
@@ -251,25 +252,48 @@ public enum GestureCatalog {
             isReserved: false
         ),
         CatalogEntry(
-            id: .wristRotate,
-            displayName: "Wrist Rotate",
+            id: .wristRotateCW,
+            displayName: "Wrist Rotate Clockwise",
             tier: .occasional,
             kind: .dynamic,
             comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
-            editorial: "A rotary metaphor for continuous values — keep the twist to a partial arc, "
-                + "since a full pronation or supination is uncomfortable to hold.",
+            editorial: "A rotary metaphor for continuous values, kept to a partial arc rather than a "
+                + "full pronation. Turns fire a tick per motion increment while you rotate — bind "
+                + "something you want repeated.",
             isReserved: false
         ),
         CatalogEntry(
-            id: .twoFingerScroll,
-            displayName: "Two-Finger Scroll",
+            id: .wristRotateCCW,
+            displayName: "Wrist Rotate Counter-Clockwise",
+            tier: .occasional,
+            kind: .dynamic,
+            comfort: "Moderate fatigue",
+            falsePositiveRisk: "Low",
+            editorial: "The mirror of the clockwise turn, same partial-arc limit. Ticks fire the "
+                + "other direction while you rotate — bind something you want repeated.",
+            isReserved: false
+        ),
+        CatalogEntry(
+            id: .twoFingerScrollUp,
+            displayName: "Two-Finger Scroll Up",
             tier: .occasional,
             kind: .dynamic,
             comfort: "Low fatigue",
             falsePositiveRisk: "Low",
-            editorial: "A familiar scroll metaphor with well-separated landmarks, at the cost of "
-                + "sustained motion over a single settling pose.",
+            editorial: "A familiar scroll metaphor with well-separated landmarks. Ticks fire "
+                + "repeatedly while you scroll — bind something you want repeated.",
+            isReserved: false
+        ),
+        CatalogEntry(
+            id: .twoFingerScrollDown,
+            displayName: "Two-Finger Scroll Down",
+            tier: .occasional,
+            kind: .dynamic,
+            comfort: "Low fatigue",
+            falsePositiveRisk: "Low",
+            editorial: "Mirrors the upward scroll, ticking the other direction at the same "
+                + "repeating cadence — bind something you want repeated.",
             isReserved: false
         ),
 

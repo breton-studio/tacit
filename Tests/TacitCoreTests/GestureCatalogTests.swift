@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import TacitCore
 
-@Test func catalogHasAllTwentyOneEntries() {
-    #expect(GestureCatalog.entries.count == 21)
+@Test func catalogHasAllTwentyThreeEntries() {
+    #expect(GestureCatalog.entries.count == 23)
 }
 
 @Test func catalogEntryIDsAreUnique() {
@@ -25,7 +25,7 @@ import Testing
 
 @Test func catalogTierPartitionSizesMatchSpec() {
     #expect(GestureCatalog.entries(in: .workhorse).count == 10)
-    #expect(GestureCatalog.entries(in: .occasional).count == 8)
+    #expect(GestureCatalog.entries(in: .occasional).count == 10)
     #expect(GestureCatalog.entries(in: .deliberate).count == 3)
 }
 
@@ -70,7 +70,7 @@ import Testing
 
 @Test func nonReservedEntriesAreNotReserved() {
     let nonReserved = GestureCatalog.entries.filter { !$0.isReserved }
-    #expect(nonReserved.count == 19)
+    #expect(nonReserved.count == 21)
     for entry in nonReserved {
         #expect(entry.id != .looseFist && entry.id != .openPalm)
     }

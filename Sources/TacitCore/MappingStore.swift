@@ -25,6 +25,16 @@ private struct MappingsFile: Codable {
     var bindings: [GestureID: GestureBinding]
 }
 
+/// The version-1 wire format, kept around solely so `MappingStore.load` can migrate an old file
+/// forward. `bindings` is keyed by raw `String` (not `GestureID`) because a v1 file may contain
+/// keys — `wristRotate`, `twoFingerScroll` — that no longer exist as `GestureID` cases; decoding
+/// straight into `[GestureID: GestureBinding]` would fail the whole file instead of just dropping
+/// those two keys.
+private struct MappingsFileV1: Codable {
+    var version: Int
+    var bindings: [String: GestureBinding]
+}
+
 /// The persistent store of user gesture→action bindings. Backed by `mappings.json` in an
 /// application-support directory (injectable for tests). Never crashes on a corrupt or
 /// future-versioned file — it quarantines the bad file and falls back to defaults.
@@ -40,7 +50,11 @@ public final class MappingStore: ObservableObject {
     /// The current `mappings.json` wire format version. Bump this — and add a migration path
     /// instead of just recovering to defaults — the day the wire format needs to change in a way
     /// that shouldn't discard user bindings.
-    public static let currentVersion = 1
+    ///
+    /// v2 (this version): `wristRotate` split into `wristRotateCW`/`wristRotateCCW`, and
+    /// `twoFingerScroll` split into `twoFingerScrollUp`/`twoFingerScrollDown` — see
+    /// `migrateV1Bindings`.
+    public static let currentVersion = 2
 
     @Published public private(set) var bindings: [GestureID: GestureBinding]
 
@@ -66,22 +80,46 @@ public final class MappingStore: ObservableObject {
     }
 
     /// Reads `mappings.json` if present. A missing file just keeps (and persists) the in-memory
-    /// defaults set in `init`. A present-but-undecodable file, or one from a version this build
-    /// doesn't understand, is quarantined via `recoverFromCorruption` and defaults take over —
-    /// this never throws and never crashes.
+    /// defaults set in `init`. A v1 file is migrated forward and re-persisted as v2 (see
+    /// `migrateV1Bindings`). A present-but-undecodable file, or one from a version this build
+    /// doesn't otherwise understand, is quarantined via `recoverFromCorruption` and defaults take
+    /// over — this never throws and never crashes.
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else {
             persist()
             return
         }
-        guard
+        if
             let decoded = try? JSONDecoder().decode(MappingsFile.self, from: data),
             decoded.version == Self.currentVersion
-        else {
-            recoverFromCorruption()
+        {
+            bindings = decoded.bindings
             return
         }
-        bindings = decoded.bindings
+        if
+            let v1 = try? JSONDecoder().decode(MappingsFileV1.self, from: data),
+            v1.version == 1
+        {
+            bindings = Self.migrateV1Bindings(v1.bindings)
+            persist()
+            return
+        }
+        recoverFromCorruption()
+    }
+
+    /// Migrates a v1 `[String: GestureBinding]` map to v2: keys that no longer name a `GestureID`
+    /// case — the removed `wristRotate` and `twoFingerScroll` — are dropped; everything else is
+    /// carried forward under its (unchanged) `GestureID`. The new v2-only IDs
+    /// (`wristRotateCW`/`CCW`, `twoFingerScrollUp`/`Down`) simply aren't present in the result,
+    /// which is fine — `binding(for:)` already falls back to a disabled default for any missing
+    /// key.
+    private static func migrateV1Bindings(_ raw: [String: GestureBinding]) -> [GestureID: GestureBinding] {
+        var migrated: [GestureID: GestureBinding] = [:]
+        for (key, binding) in raw {
+            guard let id = GestureID(rawValue: key) else { continue }
+            migrated[id] = binding
+        }
+        return migrated
     }
 
     /// Renames the unreadable/unrecognized file to `mappings.json.corrupt-<timestamp>` — preserving
@@ -176,8 +214,16 @@ public final class MappingStore: ObservableObject {
         )
         // Continuous gestures — not bindable to a single discrete action yet.
         bindings[.pinchDrag] = GestureBinding(enabled: false, action: nil)
-        bindings[.wristRotate] = GestureBinding(enabled: false, action: nil)
-        bindings[.twoFingerScroll] = GestureBinding(enabled: false, action: nil)
+        // No sensible keystroke default for a rotary tick — the catalog editorial explains the
+        // repeat-tick behavior instead.
+        bindings[.wristRotateCW] = GestureBinding(enabled: false, action: nil)
+        bindings[.wristRotateCCW] = GestureBinding(enabled: false, action: nil)
+        bindings[.twoFingerScrollUp] = GestureBinding(
+            enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [])) // Up arrow
+        )
+        bindings[.twoFingerScrollDown] = GestureBinding(
+            enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: [])) // Down arrow
+        )
         bindings[.palmPush] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 49, modifiers: [])) // Space, play/pause proxy
         )

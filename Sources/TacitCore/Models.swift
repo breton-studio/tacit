@@ -91,8 +91,10 @@ public enum GestureID: String, Codable, CaseIterable, Sendable {
     case thumbIndexTap, thumbMiddleTap, indexPoint, victory, thumbsUp
     case looseFist, openPalm, thumbRingPinkyTap
     case thumbSwipeForward, thumbSwipeBackward
-    // Occasional (M3)
-    case swipeLeft, swipeRight, swipeUp, swipeDown, fistToOpen, pinchDrag, wristRotate, twoFingerScroll
+    // Occasional (M3; wrist-rotate and two-finger-scroll are each split into a directional pair —
+    // report gestures #16/#17 split the same way #9 was)
+    case swipeLeft, swipeRight, swipeUp, swipeDown, fistToOpen, pinchDrag
+    case wristRotateCW, wristRotateCCW, twoFingerScrollUp, twoFingerScrollDown
     // Deliberate (M4)
     case palmPush, wave, twoHandFrame
 }

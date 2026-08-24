@@ -238,21 +238,44 @@ public enum CannedFrames {
         [:]
     )
 
-    /// A large rotation of the open-palm pose about the wrist — literally the gesture itself.
-    public static let wristRotate: LandmarkFrame =
+    /// A large rotation of the open-palm pose about the wrist, clockwise — literally the gesture
+    /// itself.
+    public static let wristRotateCW: LandmarkFrame =
         assemble(transformed(openPalmJoints, pivot: wristPivot, rotationDegrees: 35), [:])
 
+    /// The mirrored rotation — same pose, the opposite way about the wrist.
+    public static let wristRotateCCW: LandmarkFrame =
+        assemble(transformed(openPalmJoints, pivot: wristPivot, rotationDegrees: -35), [:])
+
     /// Index and middle held close together (not spread, unlike victory), ring/little curled,
-    /// thumb tucked — the scroll gesture's two-finger contact patch.
-    public static let twoFingerScroll: LandmarkFrame = assemble(
+    /// thumb tucked — the scroll gesture's two-finger contact patch, shared by both scroll
+    /// directions.
+    private static var twoFingerScrollBase: [HandJoint: JointPoint] {
         [
             .indexMCP: jp(0.40, 0.35), .indexPIP: jp(0.40, 0.50), .indexDIP: jp(0.40, 0.58), .indexTip: jp(0.40, 0.65),
             .middleMCP: jp(0.48, 0.35), .middlePIP: jp(0.48, 0.50), .middleDIP: jp(0.48, 0.58), .middleTip: jp(0.48, 0.65),
             .ringMCP: jp(0.62, 0.35), .ringPIP: jp(0.53, 0.38), .ringDIP: jp(0.53, 0.355), .ringTip: jp(0.53, 0.33),
             .littleMCP: jp(0.70, 0.35), .littlePIP: jp(0.55, 0.39), .littleDIP: jp(0.55, 0.365), .littleTip: jp(0.55, 0.34),
-        ],
-        fistedThumb
-    )
+        ]
+    }
+
+    /// Offsets the two contact-patch fingertips (only) by `dy`, implying the tips have traveled
+    /// up or down from the base contact pose — the up/down keyframe distinction for the scroll
+    /// pair.
+    private static func withScrollTipOffset(_ dy: Double) -> [HandJoint: JointPoint] {
+        var joints = twoFingerScrollBase
+        if let indexTip = joints[.indexTip] { joints[.indexTip] = jp(indexTip.x, indexTip.y + dy) }
+        if let middleTip = joints[.middleTip] { joints[.middleTip] = jp(middleTip.x, middleTip.y + dy) }
+        return joints
+    }
+
+    /// The scroll contact patch with both fingertips advanced upward — "up."
+    public static let twoFingerScrollUp: LandmarkFrame =
+        assemble(withScrollTipOffset(0.05), fistedThumb)
+
+    /// The mirror: both fingertips drawn back downward — "down."
+    public static let twoFingerScrollDown: LandmarkFrame =
+        assemble(withScrollTipOffset(-0.05), fistedThumb)
 
     // MARK: - Deliberate (report gestures 18–20)
 
@@ -298,8 +321,10 @@ public enum CannedFrames {
         case .swipeDown: swipeDown
         case .fistToOpen: fistToOpen
         case .pinchDrag: pinchDrag
-        case .wristRotate: wristRotate
-        case .twoFingerScroll: twoFingerScroll
+        case .wristRotateCW: wristRotateCW
+        case .wristRotateCCW: wristRotateCCW
+        case .twoFingerScrollUp: twoFingerScrollUp
+        case .twoFingerScrollDown: twoFingerScrollDown
         case .palmPush: palmPush
         case .wave: wave
         case .twoHandFrame: twoHandFrame

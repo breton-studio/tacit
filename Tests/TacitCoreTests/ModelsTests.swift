@@ -20,8 +20,8 @@ import Testing
     #expect(json.contains("\"wrist\""))   // dict keys, not tuple arrays
 }
 
-@Test func gestureIDHas21Cases() {
-    #expect(GestureID.allCases.count == 21)
+@Test func gestureIDHas23Cases() {
+    #expect(GestureID.allCases.count == 23)
 }
 
 @Test func missingJointReturnsNil() {
