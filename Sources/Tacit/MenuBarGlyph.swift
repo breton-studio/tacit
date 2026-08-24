@@ -50,13 +50,11 @@ enum TacitColors {
     }()
 }
 
-/// The menu bar glyph's identity image: the canned loose-fist `LandmarkFrame` (single source:
-/// `TacitCore.CannedFrames.looseFist`), hand-tuned so it reads unambiguously as a fist in line-art
-/// at 18×18. All 21 joints are present (none omitted), each at confidence 0.9 — there is no
-/// "missing joint" degraded-state gap in the glyph itself.
+/// The menu bar glyph's identity: Lucide's `hand`/`hand-fist` icons (`LucideGlyphs.swift`), not
+/// the HUD/Library's constellation line-art — a deliberate, user-requested exception to the
+/// spec's "constellation identity in the menu bar" rule. The constellation imagery is unchanged
+/// everywhere else (HUD, Library, popover body).
 enum MenuBarGlyph {
-    static let fistFrame: LandmarkFrame = CannedFrames.looseFist
-
     /// The stroke/fill color the glyph renders in for a given state (spec §3.7 / §4):
     /// *paused* hollow (secondary, 40% opacity), *watching* full line-art in `.primary`,
     /// *armed*/*fired* accent-filled.
@@ -96,13 +94,7 @@ final class MenuBarGlyphImageCache {
     }
 
     private func render(_ state: GlyphState) -> NSImage {
-        let content = ConstellationRenderer(
-            frame: MenuBarGlyph.fistFrame,
-            lineWidth: 1.5,
-            color: MenuBarGlyph.color(for: state),
-            fitToJoints: true
-        )
-        .frame(width: 18, height: 18)
+        let content = LucideMenuBarIcon(state: state, size: 18)
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2  // retina-sharp glyph at menu bar size
@@ -112,8 +104,8 @@ final class MenuBarGlyphImageCache {
     }
 }
 
-/// SwiftUI presentation of the constellation glyph for the popover header, where (unlike the
-/// menu bar label) SwiftUI CAN animate: this is where the `.fired` scale pulse actually plays.
+/// SwiftUI presentation of the Lucide glyph for the popover header, where (unlike the menu bar
+/// label) SwiftUI CAN animate: this is where the `.fired` scale pulse actually plays.
 struct MenuBarGlyphView: View {
     var state: GlyphState
     var size: CGFloat = 22
@@ -122,14 +114,8 @@ struct MenuBarGlyphView: View {
     @State private var pulseScale: CGFloat = 1.0
 
     var body: some View {
-        ConstellationRenderer(
-            frame: MenuBarGlyph.fistFrame,
-            lineWidth: 1.5,
-            color: MenuBarGlyph.color(for: state),
-            fitToJoints: true
-        )
-        .frame(width: size, height: size)
-        .scaleEffect(pulseScale)
+        LucideMenuBarIcon(state: state, size: size)
+            .scaleEffect(pulseScale)
         .onChange(of: state) { _, newValue in
             guard newValue == .fired else { return }
             pulse()

@@ -62,3 +62,9 @@ clips to `~/Documents/TacitFixtures/`, used to build and replay the test suite's
 fixtures. It's a developer tool, not a product feature — it has no effect on normal use, but it is
 present in every build (there's no separate debug configuration gating it), so it's always just an
 ⌥ away if you need to capture a new fixture.
+
+## Credits
+
+The menu bar/popover-header glyph is built from [Lucide](https://lucide.dev)'s `hand` and
+`hand-fist` icons (ISC License); everything else (HUD, Library, popover body) keeps Tacit's own
+constellation line-art.

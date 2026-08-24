@@ -175,7 +175,9 @@ public enum CannedFrames {
     /// hand. Wrist low-center; MCP knuckle row fanning up from it; each finger's PIP/DIP/tip curled
     /// back toward a point just above the knuckle row (how Vision actually reports a fist — folded
     /// fingers read as ABOVE the MCP row, not below it); thumb tucked to the side, clear of the
-    /// curled tips. This is also `MenuBarGlyph.fistFrame`'s single source.
+    /// curled tips. (The menu bar glyph itself now renders a Lucide `hand-fist` icon rather than
+    /// this constellation frame — see `Sources/Tacit/LucideGlyphs.swift` — but the HUD, Library,
+    /// and popover body still draw this frame as line-art.)
     public static let looseFist: LandmarkFrame = {
         let joints: [HandJoint: JointPoint] = [
             .wrist: jp(0.50, 0.16),
