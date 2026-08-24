@@ -20,7 +20,7 @@ exports a looping cartoon-glove animation per gesture into `Sources/Tacit/Resour
 ./scripts/make-app.sh
 ```
 
-Produces `build/Tacit.app`, ad-hoc signed, ready to launch or move to `/Applications`.
+Produces `build/Tacit.app`, signed with your stable Apple Development (or Developer ID) identity when one is available — falling back to ad-hoc signing with a warning otherwise — ready to launch or move to `/Applications`; if you're switching from a previous ad-hoc build or a different certificate, you'll need to re-grant Accessibility (and possibly Camera) once in System Settings.
 
 ## Run
 
