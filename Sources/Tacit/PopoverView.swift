@@ -10,6 +10,7 @@ struct PopoverView<Engine: EngineUIState>: View {
 
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
 
     @State private var isOptionKeyDown = false
     @State private var fixtureLabel = ""
@@ -203,6 +204,11 @@ struct PopoverView<Engine: EngineUIState>: View {
     private var openLibraryButton: some View {
         Button {
             openWindow(id: "library")
+            WindowActivator.bringToFront(id: "library", title: "Tacit Library")
+            // The popover is presented as MenuBarExtra's `.window` style content; `dismiss()`
+            // closes it explicitly rather than relying on it losing key focus once Library
+            // activates, so it disappears at the same moment Library comes forward.
+            dismiss()
         } label: {
             HStack(spacing: 8) {
                 Text("Open Library")

@@ -62,6 +62,7 @@ private struct MenuBarLabel: View {
                 LaunchAtLoginDefault.configureIfNeeded()
                 if !UserDefaults.standard.bool(forKey: OnboardingView.onboardedDefaultsKey) {
                     openWindow(id: "onboarding")
+                    WindowActivator.bringToFront(id: "onboarding", title: "Welcome to Tacit")
                 }
             }
     }
