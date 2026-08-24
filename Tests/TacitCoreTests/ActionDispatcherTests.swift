@@ -4,9 +4,10 @@ import Testing
 
 // MARK: - TacitAction
 
-@Test func requiresAccessibilityIsTrueOnlyForKeystrokeAndHoldKeystroke() {
+@Test func requiresAccessibilityIsTrueOnlyForKeystrokeHoldKeystrokeAndFocusTextInput() {
     #expect(TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command])).requiresAccessibility == true)
     #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).requiresAccessibility == true)
+    #expect(TacitAction.focusTextInput.requiresAccessibility == true)
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").requiresAccessibility == false)
     #expect(TacitAction.openURL("superwhisper://record").requiresAccessibility == false)
     #expect(TacitAction.runShortcut(name: "Focus").requiresAccessibility == false)
@@ -18,6 +19,7 @@ import Testing
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").summary == "Open Ghostty")
     #expect(TacitAction.openURL("superwhisper://record").summary == "superwhisper://record")
     #expect(TacitAction.runShortcut(name: "Focus").summary == "Shortcut: Focus")
+    #expect(TacitAction.focusTextInput.summary == "Focus text input")
 }
 
 @Test func holdKeystrokeSummarySpecialCasesFnKeyCode63() {
@@ -31,6 +33,7 @@ import Testing
         .launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"),
         .openURL("superwhisper://record"),
         .runShortcut(name: "Focus"),
+        .focusTextInput,
     ]
     for action in actions {
         let data = try JSONEncoder().encode(action)
@@ -39,9 +42,9 @@ import Testing
     }
 }
 
-/// M3 Task 9: an old (pre-`.holdKeystroke`) encoded `.keystroke` payload must still decode fine —
-/// adding a new enum case to a synthesized-Codable enum never perturbs decoding of payloads from
-/// cases that already existed.
+/// M3 Task 9/10: an old (pre-`.holdKeystroke`/`.focusTextInput`) encoded `.keystroke` payload must
+/// still decode fine — adding a new enum case to a synthesized-Codable enum never perturbs
+/// decoding of payloads from cases that already existed.
 @Test func oldKeystrokePayloadStillDecodesAfterHoldKeystrokeWasAdded() throws {
     let original = TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command]))
     let data = try JSONEncoder().encode(original)
@@ -63,6 +66,7 @@ private final class Spy: @unchecked Sendable {
     var launchAppCalls: [String] = []
     var openURLCalls: [String] = []
     var runShortcutCalls: [String] = []
+    var focusTextInputCallCount = 0
     var isAccessibilityTrustedCallCount = 0
 
     var postKeystrokeResult = true
@@ -71,6 +75,7 @@ private final class Spy: @unchecked Sendable {
     var launchAppResult = true
     var openURLResult = true
     var runShortcutResult = true
+    var focusTextInputResult = true
     var isAccessibilityTrustedResult = true
 
     var postKeyDownCalls: [KeyChord] { keyDirectionCalls.filter { $0.direction == "down" }.map(\.chord) }
@@ -85,6 +90,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
         launchApp: { bundleID in spy.launchAppCalls.append(bundleID); return spy.launchAppResult },
         openURL: { string in spy.openURLCalls.append(string); return spy.openURLResult },
         runShortcut: { name in spy.runShortcutCalls.append(name); return spy.runShortcutResult },
+        focusTextInput: { spy.focusTextInputCallCount += 1; return spy.focusTextInputResult },
         isAccessibilityTrusted: { spy.isAccessibilityTrustedCallCount += 1; return spy.isAccessibilityTrustedResult }
     ))
 }
@@ -98,6 +104,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.launchAppCalls.isEmpty)
     #expect(spy.openURLCalls.isEmpty)
     #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
 }
 
 @Test func dispatchKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
@@ -125,6 +132,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.postKeystrokeCalls.isEmpty)
     #expect(spy.openURLCalls.isEmpty)
     #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
@@ -143,6 +151,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.postKeystrokeCalls.isEmpty)
     #expect(spy.launchAppCalls.isEmpty)
     #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
@@ -161,6 +170,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.postKeystrokeCalls.isEmpty)
     #expect(spy.launchAppCalls.isEmpty)
     #expect(spy.openURLCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
@@ -187,6 +197,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.launchAppCalls.isEmpty)
     #expect(spy.openURLCalls.isEmpty)
     #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
 }
 
 /// Ordering matters: the key-down MUST be posted before the key-up (a full press with the halves
@@ -224,4 +235,70 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(outcome == .failed("Couldn't press key 0x3F"))
     #expect(spy.postKeyDownCalls == [chord])
+}
+
+// MARK: - .focusTextInput (M3 Task 10)
+
+@Test func dispatchFocusTextInputCallsExactlyFocusTextInputWhenTrusted() {
+    let spy = Spy()
+    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    #expect(outcome == .performed)
+    #expect(spy.focusTextInputCallCount == 1)
+    #expect(spy.postKeystrokeCalls.isEmpty)
+    #expect(spy.keyDirectionCalls.isEmpty)
+    #expect(spy.launchAppCalls.isEmpty)
+    #expect(spy.openURLCalls.isEmpty)
+    #expect(spy.runShortcutCalls.isEmpty)
+}
+
+/// `.focusTextInput.requiresAccessibility == true`, so this must go through the same gate as
+/// `.keystroke`/`.holdKeystroke` — untrusted means the closure is never even called.
+@Test func dispatchFocusTextInputReturnsNeedsAccessibilityWithoutCallingWhenUntrusted() {
+    let spy = Spy()
+    spy.isAccessibilityTrustedResult = false
+    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    #expect(outcome == .needsAccessibility)
+    #expect(spy.focusTextInputCallCount == 0)
+}
+
+@Test func dispatchFocusTextInputFailsWithFixedMessageWhenClosureReturnsFalse() {
+    let spy = Spy()
+    spy.focusTextInputResult = false
+    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    #expect(outcome == .failed("Couldn't find a text field."))
+}
+
+/// The dispatcher's Accessibility gate is derived from `TacitAction.requiresAccessibility`
+/// generically (not re-implemented per case) — this is the invariant that guarantees any FUTURE
+/// action with `requiresAccessibility == true` is automatically covered without anyone having to
+/// remember to add a matching guard in `dispatch(_:)`. `.focusTextInput` exercises that here: it
+/// gets the gate despite never touching `postKeystroke`/`postKeyDown`/`postKeyUp`.
+@Test func accessibilityGateAppliesToEveryRequiresAccessibilityAction() {
+    let requiresAccessibilityActions: [TacitAction] = [
+        .keystroke(KeyChord(keyCode: 8, modifiers: [.command])),
+        .holdKeystroke(KeyChord(keyCode: 63, modifiers: [])),
+        .focusTextInput,
+    ]
+    for action in requiresAccessibilityActions {
+        #expect(action.requiresAccessibility == true)
+        let spy = Spy()
+        spy.isAccessibilityTrustedResult = false
+        let outcome = makeDispatcher(spy).dispatch(action)
+        #expect(outcome == .needsAccessibility)
+        #expect(spy.isAccessibilityTrustedCallCount == 1)
+    }
+
+    let noAccessibilityActions: [TacitAction] = [
+        .launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"),
+        .openURL("superwhisper://record"),
+        .runShortcut(name: "Focus"),
+    ]
+    for action in noAccessibilityActions {
+        #expect(action.requiresAccessibility == false)
+        let spy = Spy()
+        spy.isAccessibilityTrustedResult = false
+        let outcome = makeDispatcher(spy).dispatch(action)
+        #expect(outcome != .needsAccessibility)
+        #expect(spy.isAccessibilityTrustedCallCount == 0)
+    }
 }

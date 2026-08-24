@@ -20,11 +20,20 @@ public enum TacitAction: Codable, Equatable, Sendable {
     /// files, which simply never contain it.
     case holdKeystroke(KeyChord)
 
-    /// True for `.keystroke` and `.holdKeystroke` — the only cases that need Accessibility
-    /// permission to actually perform (posting a synthetic key event).
+    /// M3 Task 10: finds and focuses the frontmost window's main text input via the Accessibility
+    /// API (no configuration — unlike every other case, it carries no associated value). The
+    /// search itself lives in the app target (`LiveActionEnvironment`, since `TacitCore` stays
+    /// Foundation-only and can't import `ApplicationServices`); this case is just the routing
+    /// token `ActionDispatcher` matches on. Codable via synthesis: adding this case is
+    /// backward-compatible for old `mappings.json` files, which simply never contain it.
+    case focusTextInput
+
+    /// True for `.keystroke`, `.holdKeystroke`, and `.focusTextInput` — the cases that need
+    /// Accessibility permission to actually perform (posting a synthetic key event, or reading/
+    /// setting attributes on another app's UI elements via the AX API).
     public var requiresAccessibility: Bool {
         switch self {
-        case .keystroke, .holdKeystroke: true
+        case .keystroke, .holdKeystroke, .focusTextInput: true
         case .launchApp, .openURL, .runShortcut: false
         }
     }
@@ -37,6 +46,7 @@ public enum TacitAction: Codable, Equatable, Sendable {
         case .launchApp(_, let displayName): "Open \(displayName)"
         case .openURL(let string): string
         case .runShortcut(let name): "Shortcut: \(name)"
+        case .focusTextInput: "Focus text input"
         }
     }
 }

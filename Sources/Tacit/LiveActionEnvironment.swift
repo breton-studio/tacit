@@ -80,8 +80,124 @@ enum LiveActionEnvironment {
                 p.arguments = ["run", name]
                 do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
             },
+            // M3 Task 10: BLOCKS BRIEFLY — every `AXUIElementCopyAttributeValue` call below is a
+            // synchronous round-trip into another process (potentially a hung or slow one), so
+            // this must only ever run off the main thread/actor. Its sole caller,
+            // `ActionDispatcher.dispatch(_:)`, is itself only ever invoked from `TacitEngine`'s
+            // `Task.detached` in `handleFire(_:)` — see that call site's doc comment — never
+            // synchronously from the main actor.
+            focusTextInput: { AXTextInputFocuser.focusFrontmostTextInput() },
             isAccessibilityTrusted: { AXIsProcessTrusted() }
         )
+    }
+}
+
+/// M3 Task 10: the `focusTextInput` action's Accessibility-API search + focus, split out of
+/// `LiveActionEnvironment.make()` into its own enum purely for readability (the algorithm has
+/// enough steps to want named helper functions rather than one giant closure literal).
+enum AXTextInputFocuser {
+    /// Search order, in full:
+    /// 1. `NSWorkspace.shared.frontmostApplication` → its `AXUIElementCreateApplication(pid)`.
+    /// 2. That app's `kAXFocusedWindowAttribute`; if absent, the FIRST element of
+    ///    `kAXWindowsAttribute` instead.
+    /// 3. A breadth-first walk of that window's `kAXChildrenAttribute` tree, capped at depth ≤ 8
+    ///    and ≤ 400 nodes VISITED (both caps exist so a pathological AX tree — e.g. a web page
+    ///    with thousands of DOM-backed accessibility elements — can't turn one gesture fire into
+    ///    a multi-second hang), collecting elements whose `kAXRoleAttribute` is one of
+    ///    `AXTextArea`/`AXTextField`/`AXSearchField`/`AXComboBox`.
+    /// 4. Of what the walk finds: prefer the FIRST `AXTextArea` encountered (BFS order — shallower
+    ///    wins, then left-to-right among siblings); if none, the first element of any of the other
+    ///    three roles found. The walk short-circuits the moment an `AXTextArea` is found (nothing
+    ///    later in BFS order could ever outrank it), but must otherwise exhaust the node budget
+    ///    before falling back to an "other role" candidate, since a same-depth-or-later
+    ///    `AXTextArea` could still be waiting.
+    /// 5. Focus the winning element: set `kAXFocusedAttribute` to `true`. If that fails, fall back
+    ///    to `kAXRaiseAction` (best-effort, bring its window forward; failure here is ignored —
+    ///    it's an aid, not the goal) followed by `kAXPressAction` (click-equivalent, often focuses
+    ///    a field as a side effect); the overall call succeeds iff `kAXPressAction` succeeds.
+    /// Returns `false` if any REQUIRED step fails: no frontmost app, no window, no matching
+    /// element found by the walk, or both the direct-focus and click-fallback focus attempts fail.
+    static func focusFrontmostTextInput() -> Bool {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
+        let appElement = AXUIElementCreateApplication(pid)
+
+        guard let window = focusedOrFirstWindow(of: appElement) else { return false }
+        guard let target = firstMatchingTextElement(startingAt: window) else { return false }
+        return focus(target)
+    }
+
+    /// Step 2: `kAXFocusedWindowAttribute`, falling back to the first `kAXWindowsAttribute` entry.
+    private static func focusedOrFirstWindow(of appElement: AXUIElement) -> AXUIElement? {
+        if let focused: AXUIElement = copyAttribute(appElement, kAXFocusedWindowAttribute) {
+            return focused
+        }
+        let windows: [AXUIElement] = copyAttribute(appElement, kAXWindowsAttribute) ?? []
+        return windows.first
+    }
+
+    /// Step 3+4: the capped breadth-first walk + role preference described in the doc comment
+    /// above.
+    private static func firstMatchingTextElement(startingAt root: AXUIElement) -> AXUIElement? {
+        let maxDepth = 8
+        let maxNodes = 400
+        let preferredRole = "AXTextArea"
+        let fallbackRoles: Set<String> = ["AXTextField", "AXSearchField", "AXComboBox"]
+
+        var queue: [(element: AXUIElement, depth: Int)] = [(root, 0)]
+        var nodesVisited = 0
+        var firstFallback: AXUIElement?
+
+        while !queue.isEmpty, nodesVisited < maxNodes {
+            let (element, depth) = queue.removeFirst()
+            nodesVisited += 1
+
+            if let role: String = copyAttribute(element, kAXRoleAttribute) {
+                if role == preferredRole {
+                    return element // Nothing later in BFS order can outrank this — stop now.
+                }
+                if firstFallback == nil, fallbackRoles.contains(role) {
+                    firstFallback = element
+                }
+            }
+
+            if depth < maxDepth {
+                let children: [AXUIElement] = copyAttribute(element, kAXChildrenAttribute) ?? []
+                for child in children {
+                    queue.append((child, depth + 1))
+                }
+            }
+        }
+
+        return firstFallback
+    }
+
+    /// Step 5: direct focus, falling back to raise-then-press.
+    private static func focus(_ element: AXUIElement) -> Bool {
+        let setResult = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if setResult == .success { return true }
+
+        _ = AXUIElementPerformAction(element, kAXRaiseAction as CFString) // best-effort; ignored
+        let pressResult = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        return pressResult == .success
+    }
+
+    /// `AXUIElementCopyAttributeValue` writes its result through a `CFTypeRef?` (`AnyObject?` in
+    /// Swift) out-parameter shared by every attribute type (`AXUIElement`, `CFArray`, `CFString`,
+    /// `CFBoolean`, …) — the AX API is not statically typed per attribute. This wraps that into a
+    /// generic helper returning `nil` on any `AXError` OTHER than `.success`, or if the value
+    /// can't be cast to `T` (e.g. an attribute that's absent on this element, or of a type the
+    /// caller didn't expect). No manual `Unmanaged`/retain-release bookkeeping is needed here:
+    /// `AXUIElementCopyAttributeValue`'s out-parameter is CF-audited as "copy" (caller-owned) and
+    /// Swift's importer already hands back a normally-ARC-managed `AnyObject`, exactly like every
+    /// other `Copy`-named CoreFoundation API — see e.g. `AccessibilityPermission` above, which
+    /// DOES need `Unmanaged`/`takeUnretainedValue()`, but only because `kAXTrustedCheckOptionPrompt`
+    /// is a bare global `CFString` constant (no Create/Copy call involved), not because of
+    /// anything AX-specific.
+    private static func copyAttribute<T>(_ element: AXUIElement, _ attribute: String) -> T? {
+        var value: AnyObject?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard result == .success else { return nil }
+        return value as? T
     }
 }
 

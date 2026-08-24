@@ -17,6 +17,10 @@ public struct ActionEnvironment: Sendable {
     public var launchApp: @Sendable (String) -> Bool
     public var openURL: @Sendable (String) -> Bool
     public var runShortcut: @Sendable (String) -> Bool
+    /// M3 Task 10: finds and focuses the frontmost window's main text input via the Accessibility
+    /// API; returns `false` if no suitable text element could be found/focused (the AX search
+    /// itself lives in `LiveActionEnvironment` — see its doc comment for the search order/limits).
+    public var focusTextInput: @Sendable () -> Bool
     public var isAccessibilityTrusted: @Sendable () -> Bool
 
     public init(
@@ -26,6 +30,7 @@ public struct ActionEnvironment: Sendable {
         launchApp: @Sendable @escaping (String) -> Bool,
         openURL: @Sendable @escaping (String) -> Bool,
         runShortcut: @Sendable @escaping (String) -> Bool,
+        focusTextInput: @Sendable @escaping () -> Bool,
         isAccessibilityTrusted: @Sendable @escaping () -> Bool
     ) {
         self.postKeystroke = postKeystroke
@@ -34,6 +39,7 @@ public struct ActionEnvironment: Sendable {
         self.launchApp = launchApp
         self.openURL = openURL
         self.runShortcut = runShortcut
+        self.focusTextInput = focusTextInput
         self.isAccessibilityTrusted = isAccessibilityTrusted
     }
 }
@@ -57,9 +63,22 @@ public struct ActionDispatcher: Sendable {
     }
 
     public func dispatch(_ action: TacitAction) -> DispatchOutcome {
+        // M3 Task 10: the Accessibility gate is derived from `action.requiresAccessibility`
+        // GENERICALLY, once, up front — rather than each case re-implementing its own
+        // `guard environment.isAccessibilityTrusted() else { return .needsAccessibility }`. This
+        // is the invariant that guarantees every case for which `requiresAccessibility` is true
+        // (currently `.keystroke`, `.holdKeystroke`, `.focusTextInput`) gets the gate, and that a
+        // FUTURE case added with `requiresAccessibility == true` gets it automatically too,
+        // without anyone having to remember to copy the guard into a new case body. Cases with
+        // `requiresAccessibility == false` never call `isAccessibilityTrusted()` at all (verified
+        // by the dispatcher tests' call-count assertions), matching the previous per-case
+        // behavior exactly.
+        if action.requiresAccessibility, !environment.isAccessibilityTrusted() {
+            return .needsAccessibility
+        }
+
         switch action {
         case .keystroke(let chord):
-            guard environment.isAccessibilityTrusted() else { return .needsAccessibility }
             guard environment.postKeystroke(chord) else {
                 return .failed("Couldn't press \(chord.display)")
             }
@@ -74,7 +93,6 @@ public struct ActionDispatcher: Sendable {
             // began/ended pair): dispatched through this normal fire path, it performs a full
             // press — down, then up — so the binding still does SOMETHING sensible rather than
             // silently posting a key-down with no matching key-up.
-            guard environment.isAccessibilityTrusted() else { return .needsAccessibility }
             guard environment.postKeyDown(chord) else {
                 return .failed("Couldn't press \(chord.display)")
             }
@@ -98,6 +116,12 @@ public struct ActionDispatcher: Sendable {
         case .runShortcut(let name):
             guard environment.runShortcut(name) else {
                 return .failed("Couldn't run Shortcut '\(name)'")
+            }
+            return .performed
+
+        case .focusTextInput:
+            guard environment.focusTextInput() else {
+                return .failed("Couldn't find a text field.")
             }
             return .performed
         }

@@ -57,6 +57,8 @@ struct ActionBinderView: View {
                 URLBinder(entry: entry, store: store)
             case .runShortcut:
                 ShortcutBinder(entry: entry, store: store)
+            case .focusTextInput:
+                FocusTextInputBinder(entry: entry, store: store)
             }
         }
         .onAppear { startAccessibilityPolling() }
@@ -129,7 +131,7 @@ struct ActionBinderView: View {
 /// The four bindable action kinds, in the brief's fixed order. Distinct from `TacitAction` itself
 /// so the segmented picker has something to select over before any action value exists yet.
 private enum ActionKind: CaseIterable, Identifiable, Hashable {
-    case keystroke, launchApp, openURL, runShortcut
+    case keystroke, launchApp, openURL, runShortcut, focusTextInput
 
     var id: Self { self }
 
@@ -139,6 +141,7 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
         case .launchApp: "Open App"
         case .openURL: "Open URL"
         case .runShortcut: "Run Shortcut"
+        case .focusTextInput: "Focus Input"
         }
     }
 
@@ -150,12 +153,16 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
     /// recognizes `.keystroke`, so an existing `.holdKeystroke` binding shows as "No shortcut
     /// recorded" in that segment even though `currentBindingRow` above still shows its real
     /// summary via `action.summary` regardless of which segment is selected.
+    /// M3 Task 10: `.focusTextInput` gets its own dedicated fifth segment (unlike
+    /// `.holdKeystroke`) since it's a fully first-class bindable action with real binder UI —
+    /// see `FocusTextInputBinder` below.
     init(matching action: TacitAction?) {
         switch action {
         case .none, .keystroke, .holdKeystroke: self = .keystroke
         case .launchApp: self = .launchApp
         case .openURL: self = .openURL
         case .runShortcut: self = .runShortcut
+        case .focusTextInput: self = .focusTextInput
         }
     }
 }
@@ -419,5 +426,30 @@ private struct ShortcutBinder: View {
     private func save() {
         guard let selectedShortcut else { return }
         store.setBinding(GestureBinding(enabled: true, action: .runShortcut(name: selectedShortcut)), for: entry.id)
+    }
+}
+
+// MARK: - Focus Input (M3 Task 10)
+
+/// No configuration to capture — unlike the other four binders, `.focusTextInput` carries no
+/// associated value, so this is just a quiet one-line description plus a Save button that
+/// commits the fixed action value directly.
+private struct FocusTextInputBinder: View {
+    var entry: CatalogEntry
+    @ObservedObject var store: MappingStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Finds and focuses the main text field of the app you're using.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Button("Save") { save() }
+                .buttonStyle(TacitButtonStyle())
+        }
+    }
+
+    private func save() {
+        store.setBinding(GestureBinding(enabled: true, action: .focusTextInput), for: entry.id)
     }
 }

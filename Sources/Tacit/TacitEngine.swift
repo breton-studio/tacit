@@ -939,12 +939,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
         guard binding.enabled, let action = binding.action else { return }
 
         // `ActionDispatcher.dispatch` must NEVER be called from the main actor: `.keystroke`
-        // synchronously posts a `CGEvent` and `.runShortcut` blocks on `Process.waitUntilExit()`
-        // (see `LiveActionEnvironment.runShortcut`'s doc comment) — either could stall the UI for
-        // as long as the Shortcut takes to run. `actionDispatcher` (a `Sendable` struct of
-        // `@Sendable` closures) and `action`/`gesture`/`frame` (all `Sendable` value types) are
-        // captured into a `Task.detached` that runs off any actor; only the resulting UI update
-        // hops back to the main actor via `MainActor.run`.
+        // synchronously posts a `CGEvent`, `.runShortcut` blocks on `Process.waitUntilExit()`
+        // (see `LiveActionEnvironment.runShortcut`'s doc comment), and `.focusTextInput` walks
+        // another app's Accessibility tree (see `LiveActionEnvironment.focusTextInput`'s doc
+        // comment) — any of these could stall the UI for a perceptible moment. `actionDispatcher`
+        // (a `Sendable` struct of `@Sendable` closures) and `action`/`gesture`/`frame` (all
+        // `Sendable` value types) are captured into a `Task.detached` that runs off any actor;
+        // only the resulting UI update hops back to the main actor via `MainActor.run`.
         let dispatcher = actionDispatcher
         let gesture = event.gesture
         let frame = latestFrame
