@@ -15,7 +15,7 @@ let package = Package(
             // pipeline. Excluding (rather than declaring as `resources:`) documents that intent and
             // silences SwiftPM's "found N file(s) which are unhandled" warning without creating a
             // second, unused `Bundle.module` copy of the same assets.
-            exclude: ["Resources/Info.plist", "Resources/previews"]
+            exclude: ["Resources/Info.plist", "Resources/previews", "Resources/AppIcon.icns"]
         ),
         .testTarget(name: "TacitCoreTests", dependencies: ["TacitCore"]),
     ]
