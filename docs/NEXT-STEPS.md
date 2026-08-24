@@ -30,6 +30,8 @@ Written mid-session as an account-switch handoff. The authoritative execution le
 - **Detectors for palmPush, wave, twoHandFrame** — no detector exists for these three (pinned by test `detectorBackedGesturesIsEveryGestureExceptTheThreeWithNoDetector`); their cards honestly say recognition is in the works. palmPush needs depth/scale, wave needs oscillation, twoHandFrame needs two-hand tracking.
 - Real-hand fixture recording + accuracy gate.
 - hb-motion as a reusable service for other projects (already standalone; README documents the pipeline).
+- Latch edge (parked, final review): a Toggle fire whose *new* chord is currently under an active hold is dropped whole — including the old chord's release. Needs two Toggle bindings with different chords + a concurrent hold; default config can't hit it. Fix idea: apply the hold-precedence guard only to the engage half of a swap.
+- Track "user touched this gesture" explicitly in `MappingStore` so a deliberately disabled nil-action binding is distinguishable from never-touched (today rev-3 re-enables `thumbRingPinkyTap` in both cases — same predicate rev 2 shipped).
 - Glove look: creative pass on proportions (boxy palm, small thumb, looseFist thumb tucked behind fingers) — hb-motion mesh/pose work, cosmetic.
 
 ## How to resume
