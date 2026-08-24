@@ -18,6 +18,12 @@ struct CardDetailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Task 7: whether the Try-It session overlay is showing. Set only via `startTryIt()`/
+    /// `dismissTryIt()` below so every transition into/out of it plays the deliberate
+    /// entrance/exit pair those two methods wrap it in (spec §4 binding: exits faster than
+    /// entrances).
+    @State private var isTryItActive = false
+
     private static let cornerRadius: CGFloat = 20
 
     var body: some View {
@@ -95,11 +101,39 @@ struct CardDetailView: View {
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
         )
+        // Task 7: the Try-It session overlay, layered ABOVE the scroll content but placed before
+        // `.clipShape` below so it's clipped to the exact same rounded rect as the card itself —
+        // "inside the expanded card" per the brief, not a separate floating panel. Content behind
+        // it (including `performToPreviewSection`'s `PerformToPreviewStrip`) stays mounted the
+        // whole time — see `PerformToPreviewStrip`'s doc comment for why that matters.
+        .overlay {
+            if isTryItActive {
+                TryItSessionOverlay(entry: entry, engine: engine, onDismiss: dismissTryIt)
+                    .transition(.opacity)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         // `isSource: false` — see `SpecimenCard`'s matching comment: the grid card is the app's
         // one persisting source of geometry for this id; this container is always the target.
         .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: false)
         .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
+    }
+
+    /// Shows the Try-It overlay (spec §4 binding: entrances play `TacitMotion.standardUI`).
+    private func startTryIt() {
+        withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI)) {
+            isTryItActive = true
+        }
+    }
+
+    /// Every dismissal path — Esc, click-outside, and the overlay's own post-verdict auto-close —
+    /// routes through this one method, so every exit plays the SAME quicker animation (spec §4
+    /// binding: "exits faster than entrances" — `hudOut`'s 0.16s easeOut vs. `standardUI`'s 0.25s
+    /// spring above).
+    private func dismissTryIt() {
+        withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.hudOut)) {
+            isTryItActive = false
+        }
     }
 
     // MARK: - Action binder (Task 18)
@@ -137,6 +171,15 @@ struct CardDetailView: View {
                 .foregroundStyle(.secondary)
 
             PerformToPreviewStrip(entry: entry, engine: engine)
+
+            // Task 7: the timed, verdict-bearing session — distinct from the strip above, which
+            // just ambiently lights up while the card is open. Hidden while the overlay is already
+            // showing rather than merely disabled, since a disabled full-width row would otherwise
+            // sit uselessly behind the overlay it triggers.
+            if !isTryItActive {
+                Button("Try It", action: startTryIt)
+                    .buttonStyle(TacitButtonStyle())
+            }
         }
     }
 
@@ -202,7 +245,31 @@ struct CardDetailView: View {
 /// Not `private` (Task 20): `OnboardingView`'s "Learn the Clutch" step reuses this exact view —
 /// passing `GestureCatalog.entry(for: .looseFist)` as `entry` — rather than duplicating the strip's
 /// live-tracking/paused/out-of-frame-guidance logic for a second call site.
+///
+/// Deliberately a thin wrapper around `LiveGestureStrip` (Task 7) rather than owning the rendering
+/// itself: this is the ONE view allowed to touch `engine.isPreviewActive`, so any second on-screen
+/// copy of the live strip — Task 7's `TryItSessionOverlay` shows one side-by-side with the preview
+/// loop — has to go through `LiveGestureStrip` directly instead of a second `PerformToPreviewStrip`.
+/// Two independently-mounted `PerformToPreviewStrip`s would each flip the SAME shared flag on their
+/// own appear/disappear; whichever one unmounts first (e.g. the Try-It overlay closing while this
+/// section is still on screen behind it) would wrongly turn preview mode off out from under the
+/// other, silently killing `engine.previewCandidate` for the rest of the card's lifetime.
 struct PerformToPreviewStrip: View {
+    var entry: CatalogEntry
+    @ObservedObject var engine: TacitEngine
+
+    var body: some View {
+        LiveGestureStrip(entry: entry, engine: engine)
+            .onAppear { engine.isPreviewActive = true }
+            .onDisappear { engine.isPreviewActive = false }
+    }
+}
+
+/// The rendering-only half of the live strip — identical chrome and behavior to what
+/// `PerformToPreviewStrip` showed before Task 7 (paused/live content, out-of-frame guidance), but
+/// with NO side effect on `engine.isPreviewActive`. See `PerformToPreviewStrip`'s doc comment for
+/// why that side effect has exactly one owner.
+struct LiveGestureStrip: View {
     var entry: CatalogEntry
     @ObservedObject var engine: TacitEngine
 
@@ -237,11 +304,9 @@ struct PerformToPreviewStrip: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .onAppear {
-            engine.isPreviewActive = true
             handleFrameChange(engine.latestFrame)
         }
         .onDisappear {
-            engine.isPreviewActive = false
             guidanceTask?.cancel()
             guidanceTask = nil
         }
