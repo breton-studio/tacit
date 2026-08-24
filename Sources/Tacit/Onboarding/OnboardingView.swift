@@ -460,8 +460,9 @@ private struct FirstBindingStepView: View {
         }
     }
 
-    /// The six enabled starter defaults (spec §3.6), in catalog order — read live from `store`
-    /// rather than assumed, so this list can never drift from what's actually bound.
+    /// Whichever starter defaults are enabled (spec §3.6), in catalog order — read live from
+    /// `store` rather than assumed or counted here, so this list (and its length) can never drift
+    /// from what's actually bound.
     private var starterEntries: [CatalogEntry] {
         GestureCatalog.entries.filter { !$0.isReserved && store.binding(for: $0.id).enabled }
     }

@@ -5,7 +5,11 @@ whatever action you've bound to each one — a keystroke, launching an app, open
 running a Shortcut. Recognition runs entirely on-device with Apple Vision; nothing leaves the
 machine. A clutch gesture (hold a loose fist) gates everything else, so gestures only fire while
 you've deliberately armed the system — resting your hand near the keyboard never triggers anything
-on its own.
+on its own. Alongside the static poses sits a dynamic layer — directional swipes, a fist-opening
+flourish, and continuous rotate and two-finger-scroll gestures that tick repeatedly while you hold
+them — for actions that read more naturally as a motion than a shape. In dim rooms Tacit quietly
+raises its own confidence thresholds rather than firing on noise, and says so in the menu bar until
+the light comes back.
 
 ## Build
 
@@ -19,9 +23,13 @@ Produces `build/Tacit.app`, ad-hoc signed, ready to launch or move to `/Applicat
 
 Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. Tacit
 requests camera permission at launch, alongside a short first-run onboarding: Accessibility
-permission, learning the clutch, and a look at the preset gesture bindings you start with. Tacit
+permission, learning the clutch, and a look at the preset gesture bindings you start with — among
+them three workflow defaults: a swipe switches apps, swipe-up focuses the nearest text field, and
+holding a point gesture holds down Fn, which is Wispr Flow's stock hotkey for push-to-talk
+dictation (rebindable like any other gesture if you use a different hotkey or dictation app). Tacit
 lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
-launch-at-login, and the gesture library.
+launch-at-login, and the gesture library, which also holds a Settings tab for picking a camera and
+trimming overall gesture sensitivity.
 
 ## Test
 
