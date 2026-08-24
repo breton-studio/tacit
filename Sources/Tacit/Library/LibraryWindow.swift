@@ -14,12 +14,24 @@ struct LibraryWindow: View {
 
     @State private var expandedGesture: GestureID?
     /// Cards that have already played their first-appearance stagger once. Owned here (not by
-    /// each card) because `LazyVGrid` cells can be torn down and re-materialized while scrolling —
-    /// without this, scrolling a card off-screen and back would replay its "first appearance."
+    /// each card) because the card grid's row/column chunking (see `cardGrid(entries:)`) is
+    /// recomputed whenever `contentWidth` changes (a window resize crossing a column-count
+    /// breakpoint), which re-chunks entries into different rows and gives the outer `ForEach`
+    /// fresh row identities — tearing down and rebuilding the `AppearingCard`s inside. Without
+    /// this hoisted set, that rebuild would replay the "first appearance" stagger on resize;
+    /// `AppearingCard` checks it in `onAppear` and skips straight to `appeared = true` when a
+    /// card has already played its entrance once.
     @State private var appearedIDs: Set<GestureID> = []
+    /// Measured width of the grid content (post-padding), used to eagerly chunk each tier's
+    /// entries into fixed-width rows — see the crash postmortem on `cardGrid(entries:)` below.
+    /// Seeded with the window's default content width (`720` minWidth − 24pt padding × 2) so the
+    /// very first layout pass, before `GeometryReader` reports back, already renders roughly the
+    /// right column count instead of collapsing to a single column and re-flowing a frame later.
+    @State private var contentWidth: CGFloat = 720 - 2 * 24
 
     private static let tierOrder: [GestureTier] = [.workhorse, .occasional, .deliberate]
-    private static let gridColumns = [GridItem(.adaptive(minimum: 200), spacing: 16, alignment: .top)]
+    private static let cardMinWidth: CGFloat = 200
+    private static let gridSpacing: CGFloat = 16
 
     /// M3 Task 7: the window became a two-tab `TabView` — "Gestures" (this file's original,
     /// unchanged specimen-grid content, now `gesturesTab` below) and "Settings"
@@ -56,6 +68,20 @@ struct LibraryWindow: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Measures the grid's available width (post-padding) so `cardGrid(entries:)` can
+            // chunk cards into fixed-width rows eagerly instead of relying on `LazyVGrid`'s
+            // adaptive columns — see the crash postmortem there. A passive `.background` reader
+            // (rather than making `GeometryReader` the container) so it never fights this
+            // `VStack` for its own size.
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { contentWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { _, newWidth in
+                            contentWidth = newWidth
+                        }
+                }
+            }
         }
         .background(.background)
         .overlay { detailOverlay }
@@ -70,25 +96,74 @@ struct LibraryWindow: View {
         let entries = GestureCatalog.entries(in: tier)
         return VStack(alignment: .leading, spacing: 16) {
             sectionHeader(for: tier)
+            cardGrid(entries: entries)
+        }
+    }
 
-            LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 16) {
-                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                    AppearingCard(
-                        index: index,
-                        hasAppearedBefore: appearedIDs.contains(entry.id),
-                        reduceMotion: reduceMotion,
-                        markAppeared: { appearedIDs.insert(entry.id) }
-                    ) {
-                        SpecimenCard(
-                            entry: entry,
-                            store: store,
-                            namespace: cardNamespace,
-                            isExpanded: expandedGesture == entry.id,
-                            onTap: { expand(entry.id) }
-                        )
+    /// Non-lazy stand-in for `LazyVGrid(columns: [GridItem(.adaptive(minimum: 200))])`.
+    ///
+    /// Postmortem (2026-08-24 crash): `LazyVGrid` defers building each cell's content until
+    /// SwiftUI actually needs to lay it out — and that can happen outside the normal main-actor
+    /// render cycle. An Accessibility client (Wispr Flow, on its Fn hotkey) walked this window's
+    /// accessibility tree; SwiftUICore resolved that walk down into the lazy grid's
+    /// `ForEachChild.updateValue()` on a background `com.apple.root.default-qos.cooperative`
+    /// thread, which invoked this file's `ForEach` content closure there. That closure captures
+    /// `store` (@MainActor `MappingStore`), `expandedGesture`, `appearedIDs`, and `expand(_:)`
+    /// (a `View` method, @MainActor in this SDK) — so building it off the main actor tripped a
+    /// runtime isolation check (`_swift_task_checkIsolatedSwift` → `dispatch_assert_queue_fail`,
+    /// `EXC_BREAKPOINT`) and crashed the app.
+    ///
+    /// The fix is to never let a lazy container decide *when* the cell closures run: build every
+    /// cell eagerly during `body`, which SwiftUI always evaluates on the main actor. With only
+    /// ~23 cards total across all three tiers, eager construction is effectively free, so there's
+    /// no real laziness being given up. Row/column chunking replicates `.adaptive(minimum:)`'s
+    /// math by hand using the measured `contentWidth` (see `gesturesTab`).
+    private func cardGrid(entries: [CatalogEntry]) -> some View {
+        VStack(alignment: .leading, spacing: Self.gridSpacing) {
+            ForEach(rows(for: entries), id: \.self) { row in
+                HStack(alignment: .top, spacing: Self.gridSpacing) {
+                    ForEach(row, id: \.self) { index in
+                        let entry = entries[index]
+                        AppearingCard(
+                            index: index,
+                            hasAppearedBefore: appearedIDs.contains(entry.id),
+                            reduceMotion: reduceMotion,
+                            markAppeared: { appearedIDs.insert(entry.id) }
+                        ) {
+                            SpecimenCard(
+                                entry: entry,
+                                store: store,
+                                namespace: cardNamespace,
+                                isExpanded: expandedGesture == entry.id,
+                                onTap: { expand(entry.id) }
+                            )
+                        }
+                        .frame(width: cardWidth, alignment: .topLeading)
                     }
                 }
             }
+        }
+    }
+
+    /// How many `cardMinWidth`-or-wider columns fit in the measured `contentWidth`, matching
+    /// `GridItem(.adaptive(minimum:))`'s own column-count formula.
+    private var columnCount: Int {
+        max(1, Int((contentWidth + Self.gridSpacing) / (Self.cardMinWidth + Self.gridSpacing)))
+    }
+
+    /// Each column's width when `columnCount` columns evenly split `contentWidth`, matching what
+    /// `.adaptive(minimum:)` would hand each cell.
+    private var cardWidth: CGFloat {
+        let totalSpacing = CGFloat(columnCount - 1) * Self.gridSpacing
+        return max(Self.cardMinWidth, (contentWidth - totalSpacing) / CGFloat(columnCount))
+    }
+
+    /// Chunks `entries`' indices into rows of `columnCount`, preserving catalog order — the same
+    /// left-to-right, top-to-bottom fill order `LazyVGrid` used.
+    private func rows(for entries: [CatalogEntry]) -> [[Int]] {
+        guard !entries.isEmpty else { return [] }
+        return stride(from: 0, to: entries.count, by: columnCount).map { start in
+            Array(start..<min(start + columnCount, entries.count))
         }
     }
 
