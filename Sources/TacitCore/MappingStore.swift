@@ -209,7 +209,7 @@ public final class MappingStore: ObservableObject {
 
     /// The revision `defaultBindings()` currently represents. Bump it and append a
     /// `DefaultsRevision` whenever a default VALUE changes for existing users.
-    public static let currentDefaultsRevision = 5
+    public static let currentDefaultsRevision = 6
 
     /// `UserDefaults` key holding the revision an install has been topped up to (Int).
     static let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -296,6 +296,22 @@ public final class MappingStore: ObservableObject {
                 new: GestureBinding(enabled: false, action: nil)
             ),
         ]),
+        // 2026-08-24 product ruling ("all four hand swipes move between apps in their
+        // direction"): swipeUp and swipeDown join swipeRight/swipeLeft (rev 4) as direct
+        // `.switchApp` bindings instead of shipping disabled with a keystroke suggestion. The app
+        // order is 1-D (the ⌘Tab strip), so each swipe's on-screen direction maps to its motion
+        // through that strip: swipe right/down move forward (`.next`), swipe left/up move
+        // backward (`.previous`).
+        DefaultsRevision(revision: 6, changes: [
+            .swipeUp: (
+                old: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control]))),
+                new: GestureBinding(enabled: true, action: .switchApp(.previous))
+            ),
+            .swipeDown: (
+                old: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: [.control]))),
+                new: GestureBinding(enabled: true, action: .switchApp(.next))
+            ),
+        ]),
     ]
 
     /// The revision this install was last topped up to: the Int key if present; else 2 if the
@@ -353,11 +369,11 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6, defaults revision 5 — the 2026-08-24 ring/pinky-tap-
-    /// overlap ruling on top of the same-day app-switch ruling and workhorse remap): nine enabled
-    /// user commands, the two reserved clutch/disarm gestures, and sensible-but-disabled
-    /// suggestions (or `nil`, for continuous gestures with no discrete action yet) for everything
-    /// else.
+    /// The factory bindings (spec §3.6, defaults revision 6 — the 2026-08-24 "all four hand
+    /// swipes switch apps" ruling on top of the ring/pinky-tap-overlap ruling, the app-switch
+    /// ruling, and the workhorse remap): eleven enabled user commands, the two reserved
+    /// clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for continuous
+    /// gestures with no discrete action yet) for everything else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
@@ -401,23 +417,22 @@ public final class MappingStore: ObservableObject {
         bindings[.openPalm] = GestureBinding(enabled: true, action: nil)
 
         // Enabled — defaults revision 4 (2026-08-24, "flip through apps with one gesture,
-        // right/left, never summon the app switcher"): a hand swipe right/left activates the
-        // next/previous app DIRECTLY via `NSRunningApplication.activate` — never posts ⌘Tab,
-        // never shows the system switcher.
+        // right/left, never summon the app switcher"), extended by defaults revision 6
+        // (2026-08-24, "all four hand swipes move between apps in their direction"): every hand
+        // swipe activates the next/previous app DIRECTLY via `NSRunningApplication.activate` —
+        // never posts ⌘Tab, never shows the system switcher. The app order is 1-D (the ⌘Tab
+        // strip), so each swipe's on-screen direction maps to its motion through that strip:
+        // swipe right/down move forward (`.next`), swipe left/up move backward (`.previous`).
         bindings[.swipeRight] = GestureBinding(enabled: true, action: .switchApp(.next))
         bindings[.swipeLeft] = GestureBinding(enabled: true, action: .switchApp(.previous))
+        bindings[.swipeDown] = GestureBinding(enabled: true, action: .switchApp(.next))
+        bindings[.swipeUp] = GestureBinding(enabled: true, action: .switchApp(.previous))
 
         // Disabled, no suggested action — defaults revision 5: freed up by toggle-dictate's move
         // onto `victory` above (see that binding's comment for why the two poses overlapped).
         bindings[.thumbRingPinkyTap] = GestureBinding(enabled: false, action: nil)
 
         // Disabled, with a suggested action from the ergonomics report's mapping column.
-        bindings[.swipeUp] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])) // ⌃↑ suggestion
-        )
-        bindings[.swipeDown] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: [.control])) // ⌃↓ App Exposé
-        )
         bindings[.fistToOpen] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 13, modifiers: [.command])) // ⌘W
         )
