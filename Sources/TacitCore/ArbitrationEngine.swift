@@ -15,6 +15,15 @@ public struct ArbitrationTuning: Sendable {
     /// sustained motion can emit a tick per increment instead of being rate-limited like a discrete
     /// momentary gesture.
     public var repeatCooldown: TimeInterval = 0.2
+    /// How long after the clutch completes a disarmed/arming → armed transition a `.fistToOpen`
+    /// candidate is suppressed by `ArbitrationEngine.ingestPreDebounced` — no event, no cooldown
+    /// ledger entry written, as if the candidate never arrived. The fist held to arm the clutch
+    /// opening into whatever the user does next (a tap, a swipe, releasing the hand entirely) is
+    /// not itself a deliberate `.fistToOpen` gesture; without this, EVERY clutch arm-then-release
+    /// would masquerade as one. A genuine `.fistToOpen` performed later in the SAME armed
+    /// session — well past this window — fires completely normally: this only gates the instant
+    /// right after arming, never a deliberate mid-session fist-to-open.
+    public var postArmSuppression: TimeInterval = 0.6
     /// Confidence required for a frame to *start* (or restart, after a gesture switch) a debounce count.
     public var enterConfidence: Double = 0.6
     /// Confidence required for a frame to *continue* an already-started debounce count (hysteresis).
@@ -53,6 +62,13 @@ public final class ArbitrationEngine {
     /// Last time each gesture successfully fired an event, for per-gesture cooldown.
     private var lastFiredAt: [GestureID: TimeInterval] = [:]
 
+    /// The `now` at which the clutch most recently completed a disarmed/arming → armed
+    /// transition (nil before the first arming, or after `reset()`). Set exactly once per arming,
+    /// inside `processClutch` — NOT touched by `ingestPreDebounced`'s window-extension-on-fire,
+    /// which re-assigns `state` but is not a fresh arming. Read only by `ingestPreDebounced`'s
+    /// post-arm `.fistToOpen` suppression; see `ArbitrationTuning.postArmSuppression`'s doc comment.
+    private var lastArmedAt: TimeInterval?
+
     /// Gestures that emit a *repeated* tick per motion increment while engaged (wrist-rotate,
     /// two-finger-scroll) rather than a single discrete fire. These use `tuning.repeatCooldown`
     /// instead of `tuning.cooldown` in `ingestPreDebounced`'s per-gesture cooldown check.
@@ -79,6 +95,7 @@ public final class ArbitrationEngine {
         debounceGesture = nil
         debounceCount = 0
         lastFiredAt = [:]
+        lastArmedAt = nil
     }
 
     /// Feed exactly one sample per inference frame (nil = nothing classified this frame).
@@ -122,12 +139,26 @@ public final class ArbitrationEngine {
     /// to a normal `ingest` fire — and records the cooldown. Never touches `armingStartAt`,
     /// `debounceGesture`, or `debounceCount`, so it can neither arm/disarm the clutch nor perturb
     /// an in-flight static-pose debounce running through `ingest`.
+    ///
+    /// **Post-arm `.fistToOpen` suppression** (controller fix, M3 Task 5 follow-up): a
+    /// `.fistToOpen` candidate arriving within `tuning.postArmSuppression` of the most recent
+    /// disarmed/arming → armed transition (`lastArmedAt`) is dropped here — no event, no cooldown
+    /// ledger entry — because it's the arming fist's own opening into whatever the user does
+    /// next, not a deliberate gesture. This is checked and returned BEFORE the cooldown lookup
+    /// below, so it never consumes `.fistToOpen`'s cooldown slot; a genuine `.fistToOpen`
+    /// performed later in the same armed session (once this window has passed) fires exactly as
+    /// if the suppressed candidate had never arrived. Every other gesture is unaffected.
     public func ingestPreDebounced(_ candidate: GestureCandidate, at now: TimeInterval) -> GestureEvent? {
         guard case .armed(let windowEndsAt) = state, now < windowEndsAt else { return nil }
         guard candidate.confidence >= tuning.enterConfidence else { return nil }
         guard !GestureCatalog.entry(for: candidate.gesture).isReserved else { return nil }
 
         let gesture = candidate.gesture
+
+        if gesture == .fistToOpen, let lastArmedAt, now - lastArmedAt < tuning.postArmSuppression {
+            return nil
+        }
+
         let cooldown = Self.repeatableGestures.contains(gesture) ? tuning.repeatCooldown : tuning.cooldown
         if let last = lastFiredAt[gesture], now - last < cooldown - Self.cooldownEpsilon {
             return nil
@@ -155,6 +186,7 @@ public final class ArbitrationEngine {
             armingStartAt = nil
             debounceGesture = nil
             debounceCount = 0
+            lastArmedAt = now
             state = .armed(windowEndsAt: now + tuning.commandWindow)
         } else {
             let progress = tuning.clutchHold > 0 ? min(max(elapsed / tuning.clutchHold, 0), 1) : 1

@@ -52,23 +52,28 @@ private struct Harness {
 private let dt: TimeInterval = 1.0 / 15.0
 
 /// Feeds enough `looseFist` frames (8 @ 15Hz ≈ 0.53s > the 0.4s `clutchHold`) to arm the clutch,
-/// asserting no event fires along the way, and returns a timestamp comfortably after the last
-/// one for callers to build their own post-arm sequence from.
+/// asserting no event fires along the way, and returns a timestamp shortly after the last one —
+/// `postArmGap` (2 frames, ~0.13 s) — for callers to build their own post-arm sequence from. This
+/// is a REALISTIC gap: a real user's hand doesn't teleport between the arming fist and whatever
+/// they do next, it's roughly one inference frame later.
 ///
-/// M3 Task 5 note on the gap size: `FistToOpenDetector` (wired into `Harness`'s momentary chain
-/// like every other detector — it must keep tracking through the arming hold too, exactly like
-/// `tapDetector`/`swipeDetector` already did) sees these 8 `looseFist` frames as a genuine fist
-/// phase (`.fistSeen(lastAt: <last arming frame's timestamp>)`). If the very next frame a caller
-/// feeds classifies as `.openPalm` (several fixtures' "open bookend" frames do) within its default
-/// `maxTransition` (0.5 s) of that last arming frame, it reads — correctly, by the detector's own
-/// documented contract — as a genuine fist-to-open transition and fires `.fistToOpen`. The
-/// original `t + dt` gap (~0.067 s) was far inside that window and produced exactly that spurious
-/// fire once `FistToOpenDetector` was wired in. `postArmGap` (0.6 s) clears `maxTransition`
-/// with margin, so `FistToOpenDetector` sees `elapsed > maxTransition` on that next frame and
-/// resets to `.idle` instead — without touching the detector's tuning or logic. The 4 s
-/// `commandWindow` set on arming comfortably outlives this gap, so the engine is still `.armed`
-/// however a caller uses the returned timestamp.
-private let postArmGap: TimeInterval = 0.6
+/// M3 Task 5 controller-review history: `FistToOpenDetector` (wired into `Harness`'s momentary
+/// chain like every other detector — it must keep tracking through the arming hold too, exactly
+/// like `tapDetector`/`swipeDetector` already did) sees these 8 `looseFist` frames as a genuine
+/// fist phase. Because this gap is realistically small, the very next frame a caller feeds — if
+/// it classifies as `.openPalm` (several fixtures' "open bookend" frames do) — still reads as a
+/// fist-to-open transition by `FistToOpenDetector`'s own contract, exactly as it would for a real
+/// user releasing the arming fist. A first pass at this task widened this gap to 0.6s to dodge
+/// that read entirely — flagged in review as fixture artifice papering over a real product gap: a
+/// real user's post-arm gap is ~1 frame, so EVERY clutch-arm-then-release would have masqueraded
+/// as `.fistToOpen` in production. The actual fix is `ArbitrationTuning.postArmSuppression` in
+/// `ArbitrationEngine.ingestPreDebounced` (a real user-facing rule: the arming fist's own opening
+/// is not a gesture) — with that in place, `FistToOpenDetector` is allowed to correctly recognize
+/// the transition, and it's `ingestPreDebounced` that correctly suppresses firing it as an event
+/// this soon after arming. This gap only needs to stay realistic; the suppression is what makes
+/// `armedThumbIndexTapFiresOnceWithoutDisarming` below pass honestly. The 4 s `commandWindow` set
+/// on arming comfortably outlives this small gap, so the engine is still `.armed` regardless.
+private let postArmGap: TimeInterval = 2 * dt
 
 @discardableResult
 private func armClutch(_ harness: inout Harness) -> TimeInterval {

@@ -435,3 +435,72 @@ func feed(
     #expect(e.ingestPreDebounced(candidate, at: 0) == nil)
     #expect(e.state == .disarmed)
 }
+
+// MARK: - Post-arm `.fistToOpen` suppression (controller fix, M3 Task 5 follow-up)
+//
+// The clutch arms by holding `.looseFist`; the arming fist's OWN subsequent opening into
+// whatever the user does next (release into a tap, a swipe, or just relaxing the hand) is not
+// itself a deliberate `.fistToOpen` gesture — without this suppression, EVERY clutch arm would
+// masquerade as one. A `.fistToOpen` performed later in the SAME armed session, once
+// `ArbitrationTuning.postArmSuppression` (default 0.6s) has elapsed since arming, is the
+// deliberate mid-session case and must keep firing normally.
+//
+// Each test below extracts the actual arming instant from `windowEndsAt - commandWindow` rather
+// than assuming a specific arming frame index — `feed`'s 8-frame `.looseFist` hold can complete
+// arming on either of its last two frames depending on `Double` rounding of `i * dt`, so reading
+// it back off `state` is the only robust way to anchor test timestamps to it.
+
+@Test func fistToOpenSuppressedShortlyAfterArming() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let windowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+    let armedAt = windowEndsAt - ArbitrationTuning().commandWindow
+
+    // 0.2s after arming: well inside the default 0.6s postArmSuppression window.
+    let t = armedAt + 0.2
+    let candidate = GestureCandidate(gesture: .fistToOpen, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) == nil)
+
+    // Suppressed, not just silent: no cooldown ledger entry was written, so a later fire (past
+    // the suppression window here too) is not somehow throttled by this attempt.
+    let laterT = armedAt + 0.8
+    let laterCandidate = GestureCandidate(gesture: .fistToOpen, confidence: 0.9, timestamp: laterT)
+    #expect(e.ingestPreDebounced(laterCandidate, at: laterT) == GestureEvent(gesture: .fistToOpen, timestamp: laterT))
+}
+
+@Test func fistToOpenFiresOnceSuppressionWindowElapses() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let windowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+    let armedAt = windowEndsAt - ArbitrationTuning().commandWindow
+
+    // 0.8s after arming: past the default 0.6s postArmSuppression window.
+    let t = armedAt + 0.8
+    let candidate = GestureCandidate(gesture: .fistToOpen, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) == GestureEvent(gesture: .fistToOpen, timestamp: t))
+}
+
+@Test func fistToOpenFiresNormallyMidSessionWellPastSuppression() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    // A deliberate fist-to-open several seconds into the same armed session — far past the
+    // arming instant, the case this suppression must never touch.
+    let t = 3.0
+    let candidate = GestureCandidate(gesture: .fistToOpen, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) == GestureEvent(gesture: .fistToOpen, timestamp: t))
+}
+
+@Test func postArmSuppressionDoesNotAffectOtherMomentaryGestures() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let windowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+    let armedAt = windowEndsAt - ArbitrationTuning().commandWindow
+
+    // Same shortly-after-arming timing as the suppressed `.fistToOpen` case above, but a
+    // different gesture: the suppression must be scoped to `.fistToOpen` only.
+    let t = armedAt + 0.2
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) == GestureEvent(gesture: .thumbIndexTap, timestamp: t))
+}
