@@ -12,12 +12,12 @@ Written mid-session as an account-switch handoff. The authoritative execution le
 - **tacit** (main @ `db3aad8`): `GesturePreviewView` (alpha-video loop / poster / hover-play, constellation fallback when assets absent), 46 preview assets bundled into `Tacit.app/Contents/Resources/previews`, Try-It sessions (10s window, checkmark verdict, per-gesture coaching hints, honest "still in the works" copy for the 3 detectorless gestures), `make-app.sh` bundling. The rebuilt app is running (relaunched with the final assets).
 - Task 8 took 3 visual-polish fix rounds on thumbsUp (diagonal thumb → cuff-disc blob → off-center framing); final render verified by eye: centered 👍, nothing clipped. thumbSwipe forward/backward were redesigned to be visually distinguishable (motion-diff ≥2× the sanity floor).
 
+**Workhorse remap (2026-08-24, plan `docs/superpowers/plans/2026-08-24-tacit-workhorse-remap.md`): shipped.** Defaults revision 3 — victory→⌘Tab, thumbs-up→focus text input, thumb–ring/pinky tap→Toggle Fn (hands-free dictation, engine-owned `KeyLatch`), swipes off. `MappingStore` now carries a `DefaultsRevision` chain (`tacit.defaultsRevision`) instead of the M3 bool flag. Keystrokes have Press / Hold / Toggle delivery in the binder; the popover shows a "Release" row while a chord is latched.
+
 ## Remaining steps, in order
 
-1. **Move the `m4` tag** — it points at `937e08c`, two commits behind the milestone tip `db3aad8`. Force-tag ops were permission-blocked for the agent session. Run manually:
-   `cd ~/Developer/tacit && git tag -f m4 && git push -f origin m4`
-2. **Final whole-milestone M4 review** — the per-task reviews all passed, but the closing cross-task review (seams between GesturePreviewView / TryItSession / real assets: PreviewAssets static URL cache correctness now that assets exist, player hygiene with 23 hover cards, dual loop players when Try-It opens over the detail hero, hb-motion `verify_weight_isolation` only checking the Glove object not the new separate Cuff object) was interrupted by an API spend limit mid-run. Re-dispatch it; diffs are pre-packaged at `.superpowers/sdd/2026-08-24-tacit-m4/review-e4a00f4..db3aad8.diff` (tacit) and `review-hbmotion-m4.diff` (hb-motion code, binaries excluded). Its partial run already confirmed 248 tests green and the 46-file bundle. Then run one fix wave for any findings, and update the memory file + delete the SDD workspace.
-3. **Manual smoke test** (2 min, human eyes): open the Library window — cards should show animated glove loops on hover, the detail hero should loop, "Try It" should give a checkmark when you perform the gesture and a coaching hint on timeout, and Esc should work in the overlay.
+1. Manual smoke test of the remap (2 min): clutch → victory switches apps; thumbs-up focuses a text field; thumb–ring/pinky tap starts Wispr Flow dictation hands-free, tap again stops it, popover "Release" also stops it.
+2. Fixture recording session + ≥90% accuracy gate (user-gated; ⌥ in the popover reveals the recorder).
 
 ## Deferred minors (ledgered, ship-with-note)
 
@@ -30,6 +30,7 @@ Written mid-session as an account-switch handoff. The authoritative execution le
 - **Detectors for palmPush, wave, twoHandFrame** — no detector exists for these three (pinned by test `detectorBackedGesturesIsEveryGestureExceptTheThreeWithNoDetector`); their cards honestly say recognition is in the works. palmPush needs depth/scale, wave needs oscillation, twoHandFrame needs two-hand tracking.
 - Real-hand fixture recording + accuracy gate.
 - hb-motion as a reusable service for other projects (already standalone; README documents the pipeline).
+- Glove look: creative pass on proportions (boxy palm, small thumb, looseFist thumb tucked behind fingers) — hb-motion mesh/pose work, cosmetic.
 
 ## How to resume
 
