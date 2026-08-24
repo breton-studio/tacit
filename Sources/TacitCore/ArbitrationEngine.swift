@@ -48,7 +48,16 @@ public enum ArbitrationState: Equatable, Sendable {
 /// `ArbitrationEngine` is driven entirely by the `now` parameter passed to `ingest` — it holds
 /// zero wall-clock state and makes zero calls to `Date()`, so fixture replay is fully deterministic.
 public final class ArbitrationEngine {
-    private let tuning: ArbitrationTuning
+    /// M3 Task 6: a `var`, not a `let` — `setTuning(_:)` below lets `PipelineCore` swap tuning
+    /// (e.g. `LowLightPolicy.adjusted(...)`) on a low-light state flip WITHOUT recreating the
+    /// engine. Recreating would reset `state`, `armingStartAt`, `debounceGesture`/`debounceCount`,
+    /// `lastFiredAt` (every gesture's cooldown ledger), and `lastArmedAt` — i.e. it would silently
+    /// disarm the user's clutch and clear every cooldown the instant the room dims or brightens,
+    /// which is exactly the kind of surprise arbitration exists to prevent. Swapping `tuning` in
+    /// place changes only the numbers future `ingest`/`ingestPreDebounced` calls compare against;
+    /// every other piece of engine state — and therefore every cooldown/armed-window/debounce
+    /// already in flight — survives the swap untouched.
+    private var tuning: ArbitrationTuning
 
     public private(set) var state: ArbitrationState = .disarmed
 
@@ -85,6 +94,16 @@ public final class ArbitrationEngine {
     private static let cooldownEpsilon: TimeInterval = 1e-9
 
     public init(tuning: ArbitrationTuning = ArbitrationTuning()) {
+        self.tuning = tuning
+    }
+
+    /// Replaces the tuning used by every subsequent `ingest`/`ingestPreDebounced` call, leaving
+    /// `state`, the arming clock, the in-progress debounce, and every gesture's cooldown ledger
+    /// exactly as they were — see `tuning`'s doc comment for why swapping in place (rather than
+    /// recreating the engine) matters. Callers driving this from outside a single-threaded context
+    /// must serialize their own calls (e.g. via an owning actor) the same way `ingest` itself
+    /// requires; this method does no locking of its own.
+    public func setTuning(_ tuning: ArbitrationTuning) {
         self.tuning = tuning
     }
 

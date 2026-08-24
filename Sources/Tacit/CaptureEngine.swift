@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreVideo
 import Foundation
 import TacitCore
 
@@ -54,6 +55,28 @@ final class CaptureEngine: NSObject, ObservableObject {
     }
 
     private nonisolated(unsafe) var onFrameStorage: (@Sendable (CVPixelBuffer, TimeInterval) -> Void)?
+
+    /// Invoked on `captureQueue` roughly every 2 s with the frame's mean luma (0…1, cheap coarse
+    /// sample — see `SampleBufferDelegateBox.meanLuma(of:)`) and its presentation timestamp.
+    ///
+    /// Same write-once discipline as `onFrame` above, for the same reason: both the getter and
+    /// setter are `nonisolated` so `SampleBufferDelegateBox` can read/call it synchronously from
+    /// the capture queue without a `Task` hop, backing storage is `nonisolated(unsafe)`, and
+    /// `start()` flips `hasStarted` to enforce "set once, from the main actor, before `start()`" —
+    /// a set after that point trips an `assertionFailure` (crashing in debug) and is otherwise
+    /// silently ignored, rather than racing the capture queue's reads.
+    nonisolated var onLuma: (@Sendable (Double, TimeInterval) -> Void)? {
+        get { onLumaStorage }
+        set {
+            guard !hasStarted else {
+                assertionFailure("CaptureEngine.onLuma must be set before start() is called; ignoring late write")
+                return
+            }
+            onLumaStorage = newValue
+        }
+    }
+
+    private nonisolated(unsafe) var onLumaStorage: (@Sendable (Double, TimeInterval) -> Void)?
     private nonisolated(unsafe) var hasStarted = false
 
     private let captureQueue = DispatchQueue(label: "studio.breton.tacit.capture")
@@ -240,11 +263,18 @@ final class CaptureEngine: NSObject, ObservableObject {
 /// callbacks on `captureQueue` and applies the ~15 Hz `InferenceThrottle` before forwarding to
 /// `CaptureEngine`. It is declared `@unchecked Sendable` because AVFoundation calls it from an
 /// arbitrary (non-Swift-concurrency-tracked) queue; the only mutable state it owns —
-/// `throttle` — is only ever touched from that one serial queue, so the lack of compiler-enforced
-/// isolation is safe in practice.
+/// `throttle` and `lumaThrottle` — is only ever touched from that one serial queue, so the lack of
+/// compiler-enforced isolation is safe in practice.
 private final class SampleBufferDelegateBox: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private weak var engine: CaptureEngine?
     private var throttle = InferenceThrottle(minInterval: 1.0 / 15.0)
+    /// M3 Task 6: gates `onLuma` to roughly once every 2 s — independent of, and checked before,
+    /// `throttle` above — so the luma sample keeps landing on schedule even on a raw frame that
+    /// `throttle` will go on to drop for the ~15 Hz frame path. The sampling work itself
+    /// (`meanLuma(of:)` below) only actually runs on the rare frame that clears this throttle;
+    /// every other frame pays just one cheap timestamp comparison, so the frame path is not
+    /// slowed by this.
+    private var lumaThrottle = InferenceThrottle(minInterval: 2.0)
 
     init(engine: CaptureEngine) {
         self.engine = engine
@@ -257,7 +287,97 @@ private final class SampleBufferDelegateBox: NSObject, AVCaptureVideoDataOutputS
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+
+        if lumaThrottle.shouldRun(at: timestamp) {
+            engine?.onLuma?(Self.meanLuma(of: pixelBuffer), timestamp)
+        }
+
         guard throttle.shouldRun(at: timestamp) else { return }
         engine?.onFrame?(pixelBuffer, timestamp)
+    }
+
+    // MARK: - Luma sampling (M3 Task 6)
+
+    /// Coarse mean luma (0…1) of `pixelBuffer`, sampled on a stride rather than every pixel —
+    /// cheap enough to run on the capture queue without perturbing the frame path, especially
+    /// since `lumaThrottle` above only lets this run once every ~2 s. Handles the two pixel
+    /// formats `AVCaptureVideoDataOutput` can hand back on macOS: biplanar 4:2:0 YCbCr (the luma
+    /// plane IS the Y channel — sampled directly) and 32-bit BGRA (no dedicated luma channel, so
+    /// `(r+g+b)/3` stands in for it). Any other format returns a neutral 0.5 rather than guessing
+    /// at a layout it doesn't recognize.
+    fileprivate static func meanLuma(of pixelBuffer: CVPixelBuffer) -> Double {
+        switch CVPixelBufferGetPixelFormatType(pixelBuffer) {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+            return meanBiplanarLuma(of: pixelBuffer)
+        case kCVPixelFormatType_32BGRA:
+            return meanBGRALuma(of: pixelBuffer)
+        default:
+            return 0.5
+        }
+    }
+
+    /// Stride (in samples, both axes) used by both sampling paths below — "every 32nd pixel" per
+    /// the task brief; plenty for a coarse ambient-brightness read, nowhere near a full-resolution
+    /// scan.
+    private static let sampleStride = 32
+
+    private static func meanBiplanarLuma(of pixelBuffer: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        // Plane 0 of a biplanar 4:2:0 buffer IS the luma (Y) plane, one byte per sample.
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return 0.5 }
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+
+        var sum = 0
+        var count = 0
+        var y = 0
+        while y < height {
+            let rowStart = y * bytesPerRow
+            var x = 0
+            while x < width {
+                sum += Int(bytes[rowStart + x])
+                count += 1
+                x += sampleStride
+            }
+            y += sampleStride
+        }
+        guard count > 0 else { return 0.5 }
+        return Double(sum) / Double(count) / 255.0
+    }
+
+    private static func meanBGRALuma(of pixelBuffer: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 0.5 }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+
+        var sum = 0
+        var count = 0
+        var y = 0
+        while y < height {
+            let rowStart = y * bytesPerRow
+            var x = 0
+            while x < width {
+                let offset = rowStart + x * 4
+                let b = Int(bytes[offset])
+                let g = Int(bytes[offset + 1])
+                let r = Int(bytes[offset + 2])
+                sum += (r + g + b) / 3
+                count += 1
+                x += sampleStride
+            }
+            y += sampleStride
+        }
+        guard count > 0 else { return 0.5 }
+        return Double(sum) / Double(count) / 255.0
     }
 }

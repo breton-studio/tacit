@@ -173,13 +173,31 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// on the main actor, and by the time `deinit` runs nothing else can be touching this instance.
     private nonisolated(unsafe) var systemStateObserverTokens: [(NotificationCenter, NSObjectProtocol)] = []
 
-    /// The two components `warning` is derived from (spec §6): a camera-side message (from
-    /// `CaptureState`) and an Accessibility-side message (from the poll wired in `init` below).
-    /// Kept separate rather than overwriting one `warning` in place so neither source can clobber
-    /// the other's message — `recomputeWarning()` is the only place they're combined, camera
-    /// taking priority since a camera problem blocks everything downstream of it.
+    /// The three components `warning` is derived from (spec §6): a camera-side message (from
+    /// `CaptureState`), a low-light message (M3 Task 6, from `lowLightPolicy` below), and an
+    /// Accessibility-side message (from the poll wired in `init` below). Kept separate rather
+    /// than overwriting one `warning` in place so no source can clobber another's message —
+    /// `recomputeWarning()` is the only place all three are combined, in a deliberate precedence
+    /// order: **camera unavailable > low light > accessibility**. Camera wins outright because it
+    /// blocks recognition entirely (nothing downstream works without frames); low light outranks
+    /// accessibility because it's a live signal about the CURRENT gesture-recognition conditions
+    /// (a dim room degrades every gesture, right now), whereas the accessibility gap only affects
+    /// keystroke actions specifically and persists regardless of lighting — the more acute,
+    /// currently-degrading condition is shown first.
     private var captureWarning: String?
+    /// M3 Task 6 (spec §6 low-light row): non-nil exactly while `lowLightPolicy.isLowLight` is
+    /// `true`, holding the fixed copy "More light helps Tacit see your hand." Set/cleared only in
+    /// `handleLuma(_:at:)`, on a hysteresis FLIP — never recomputed from scratch on every sample,
+    /// so `recomputeWarning()` can treat this exactly like `captureWarning`/`accessibilityWarning`.
+    private var lowLightWarning: String?
     private var accessibilityWarning: String?
+
+    /// M3 Task 6: pure hysteresis policy (`Sources/TacitCore/LowLightPolicy.swift`) fed sampled
+    /// luma from `CaptureEngine.onLuma` — see `handleLuma(_:at:)`. Lives here (not on
+    /// `PipelineCore`) because it drives both `warning` (main-actor UI state) and the arbitration
+    /// tuning swap; `PipelineCore.setLowLight` is only ever told the resulting boolean, never given
+    /// this policy itself.
+    private var lowLightPolicy = LowLightPolicy()
     /// True while at least one ENABLED binding's action `requiresAccessibility` — recomputed
     /// whenever `mappingStore.bindings` changes (wired below, in `init`). Kept as a stored flag
     /// (rather than re-scanning bindings on every 5 s poll tick) so the poll loop only ever has to
@@ -287,6 +305,18 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         capture.onFrame = { pixelBuffer, timestamp in
             continuation.yield((pixelBuffer, timestamp))
+        }
+
+        // M3 Task 6: fires on the capture queue roughly every 2s (see `CaptureEngine.onLuma`'s doc
+        // comment) — hop to the main actor before touching `lowLightPolicy`/`warning`, matching
+        // this file's established `Task { @MainActor in ... }` convention for every other
+        // capture-queue-originated callback (contrast the `@objc` notification handlers in
+        // `CaptureEngine` itself, which rely on a *documented* main-thread guarantee this callback
+        // doesn't have).
+        capture.onLuma = { [weak self] luma, timestamp in
+            Task { @MainActor in
+                self?.handleLuma(luma, at: timestamp)
+            }
         }
 
         pipelineTask = Task { @MainActor [weak self] in
@@ -545,11 +575,38 @@ final class TacitEngine: ObservableObject, EngineUIState {
         recomputeWarning()
     }
 
-    /// `warning`'s single point of combination (spec §6): a camera problem takes priority — it
-    /// blocks recognition entirely, whereas the Accessibility gap only disables keystroke actions
-    /// specifically — so it's shown first if both are true at once.
+    /// `warning`'s single point of combination (spec §6). Precedence, most acute first: **camera
+    /// unavailable > low light > accessibility** — see `captureWarning`'s doc comment for the full
+    /// rationale. A plain `??` chain in that order is sufficient: at most one of the three is ever
+    /// non-nil in the common case, but if more than one is true at once (e.g. a dim room AND a
+    /// missing Accessibility grant), only the highest-priority message is shown, exactly as the
+    /// pre-M3 camera-vs-accessibility chain already did.
     private func recomputeWarning() {
-        warning = captureWarning ?? accessibilityWarning
+        warning = captureWarning ?? lowLightWarning ?? accessibilityWarning
+    }
+
+    // MARK: - Low light (spec §6, M3 Task 6)
+
+    /// Feeds one sampled luma reading into `lowLightPolicy` and, only on a hysteresis FLIP (the
+    /// common case is no flip — most samples just confirm the current state), updates `warning`
+    /// and asks `PipelineCore` to swap its arbitration tuning accordingly.
+    ///
+    /// Order matters slightly here but isn't safety-critical either way: `lowLightWarning`/
+    /// `recomputeWarning()` update synchronously (so the UI reflects the new state immediately),
+    /// while the tuning swap is dispatched into a `Task` awaiting the actor-isolated
+    /// `PipelineCore.setLowLight` — see that method's doc comment for why the swap itself is race-
+    /// free regardless of when this `Task` actually runs relative to an in-flight frame.
+    private func handleLuma(_ luma: Double, at timestamp: TimeInterval) {
+        let wasLowLight = lowLightPolicy.isLowLight
+        let isLowLight = lowLightPolicy.ingest(luma: luma, at: timestamp)
+        guard isLowLight != wasLowLight else { return }
+
+        lowLightWarning = isLowLight ? "More light helps Tacit see your hand." : nil
+        recomputeWarning()
+
+        Task { [pipeline] in
+            await pipeline?.setLowLight(isLowLight)
+        }
     }
 
     // MARK: - Accessibility warning (spec §6, Task 20; wired in `init`, Task 21)
@@ -713,6 +770,13 @@ private actor PipelineCore {
     private let detector = HandPoseDetector()
     private let classifier = StaticPoseClassifier()
     private let arbitration = ArbitrationEngine()
+    /// M3 Task 6: the un-adjusted tuning `arbitration` was constructed with — kept here (not just
+    /// inline in `ArbitrationEngine()`'s default) so `setLowLight(_:)` below always has the true
+    /// baseline to adjust FROM, regardless of how many times low light has flipped on/off since.
+    /// Without this, feeding an already-adjusted tuning back into `LowLightPolicy.adjusted` on a
+    /// second "low light" flip would double-raise `enterConfidence`/`stayConfidence` instead of
+    /// idempotently reaching the same adjusted values every time.
+    private let baseArbitrationTuning = ArbitrationTuning()
 
     /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
     /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
@@ -875,6 +939,27 @@ private actor PipelineCore {
     /// briefly show stale progress from before the pause.
     func reset() {
         arbitration.reset()
+    }
+
+    /// M3 Task 6: called by `TacitEngine` on every low-light hysteresis FLIP (not on every luma
+    /// sample — see `TacitEngine.handleLuma(_:at:)`) to swap `arbitration`'s tuning between
+    /// `baseArbitrationTuning` and its `LowLightPolicy.adjusted` counterpart.
+    ///
+    /// This is an actor-isolated method specifically so the swap can never race a concurrently
+    /// in-flight `process(pixelBuffer:timestamp:)` call: `process` suspends at `await
+    /// detector.detect(...)`, and PipelineCore being an `actor` means that suspension is the only
+    /// point another call into this actor — including this one — can run; `setTuning` itself has
+    /// no suspension point, so once it starts running it completes atomically before the next
+    /// queued call (whether that's the rest of a paused `process`, or another `setLowLight`) gets
+    /// a turn. `ArbitrationEngine.setTuning` swaps only the tuning field in place — `state`, the
+    /// arming clock, the in-progress debounce, and every gesture's cooldown ledger are untouched
+    /// — so a flip never disarms the user's clutch or clears a cooldown that was already ticking.
+    ///
+    /// Idempotent: always recomputes `LowLightPolicy.adjusted(baseArbitrationTuning, lowLight: on)`
+    /// from the untouched base, so calling this twice with the same `on` re-applies the identical
+    /// tuning rather than compounding an adjustment.
+    func setLowLight(_ on: Bool) {
+        arbitration.setTuning(LowLightPolicy.adjusted(baseArbitrationTuning, lowLight: on))
     }
 
     /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds all
