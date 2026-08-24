@@ -2,6 +2,7 @@
 import AppKit
 import ServiceManagement
 import TacitCore
+import OSLog
 
 /// The real macOS implementation of `ActionEnvironment` — posts synthetic key events, launches
 /// apps, opens URLs, and runs Shortcuts. Kept deliberately dumb (no logic beyond translating one
@@ -25,9 +26,17 @@ enum LiveActionEnvironment {
                 let flags = cgEventFlags(for: chord.modifiers)
                 guard let down = CGEvent(keyboardEventSource: nil, virtualKey: chord.keyCode, keyDown: true),
                       let up = CGEvent(keyboardEventSource: nil, virtualKey: chord.keyCode, keyDown: false)
-                else { return false }
+                else {
+                    TacitLog.actions.info(
+                        "postKeystroke keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) CGEvent creation failed"
+                    )
+                    return false
+                }
                 down.flags = flags; up.flags = flags
                 down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+                TacitLog.actions.info(
+                    "postKeystroke keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) down+up posted"
+                )
                 return true
             },
             // M3 Task 9: the down-only/up-only halves `TacitEngine`'s hold-began/hold-ended paths
@@ -45,20 +54,36 @@ enum LiveActionEnvironment {
             // documented here rather than guaranteed.
             postKeyDown: { chord in
                 guard let down = CGEvent(keyboardEventSource: nil, virtualKey: chord.keyCode, keyDown: true)
-                else { return false }
+                else {
+                    TacitLog.actions.info(
+                        "postKeyDown keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) CGEvent creation failed"
+                    )
+                    return false
+                }
                 var flags = cgEventFlags(for: chord.modifiers)
                 if chord.keyCode == 63 { flags.insert(.maskSecondaryFn) }
                 down.flags = flags
                 down.post(tap: .cghidEventTap)
+                TacitLog.actions.info(
+                    "postKeyDown keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) posted"
+                )
                 return true
             },
             postKeyUp: { chord in
                 guard let up = CGEvent(keyboardEventSource: nil, virtualKey: chord.keyCode, keyDown: false)
-                else { return false }
+                else {
+                    TacitLog.actions.info(
+                        "postKeyUp keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) CGEvent creation failed"
+                    )
+                    return false
+                }
                 // `.maskSecondaryFn` is deliberately NOT set here — the up event represents Fn's
                 // release, so its flags must NOT carry the "Fn is down" bit forward.
                 up.flags = cgEventFlags(for: chord.modifiers)
                 up.post(tap: .cghidEventTap)
+                TacitLog.actions.info(
+                    "postKeyUp keyCode=\(chord.keyCode, privacy: .public) modifiers=\(chord.modifiers.rawValue, privacy: .public) posted"
+                )
                 return true
             },
             launchApp: { bundleID in

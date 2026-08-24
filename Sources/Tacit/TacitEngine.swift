@@ -249,6 +249,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// (rather than re-scanning bindings on every 5 s poll tick) so the poll loop only ever has to
     /// ask one question: is Accessibility trusted right now.
     private var enabledKeystrokeBindingExists = false
+    /// Diagnostic only: last `AXIsProcessTrusted()` result logged by `recomputeAccessibilityWarning()`,
+    /// so the 5 s poll only logs on an actual flip rather than spamming the log stream every tick.
+    private var lastLoggedAccessibilityTrusted: Bool?
 
     /// M3 Task 9: tracks whether a holdable static pose (`Self.holdableGestures`) is currently
     /// being held, independent of whether it's bound to `.holdKeystroke` — see
@@ -362,6 +365,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
 
         registerForScreenStateNotifications()
+
+        TacitLog.engine.notice("engine init: AXIsProcessTrusted=\(AXIsProcessTrusted(), privacy: .public)")
     }
 
     deinit {
@@ -669,6 +674,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     }
 
     private func handleCaptureStateChange(_ state: CaptureState) {
+        TacitLog.capture.notice("capture state -> \(String(describing: state), privacy: .public)")
         updateWarning(for: state)
         if !isRunning(state) {
             // Capture stopped (paused, interrupted, or unavailable): drop any stale arbitration
@@ -750,7 +756,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
     // MARK: - Accessibility warning (spec §6, Task 20; wired in `init`, Task 21)
 
     private func recomputeAccessibilityWarning() {
-        accessibilityWarning = (enabledKeystrokeBindingExists && !AXIsProcessTrusted())
+        let trusted = AXIsProcessTrusted()
+        if trusted != lastLoggedAccessibilityTrusted {
+            lastLoggedAccessibilityTrusted = trusted
+            TacitLog.engine.notice("AXIsProcessTrusted -> \(trusted, privacy: .public)")
+        }
+        accessibilityWarning = (enabledKeystrokeBindingExists && !trusted)
             ? "Keystroke actions need Accessibility"
             : nil
         recomputeWarning()
@@ -777,6 +788,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
             latestFrame = nil
         }
 
+        if !arbitrationStatesMatch(lastArbitrationState, result.arbitrationState) {
+            TacitLog.engine.notice("arbitration -> \(String(describing: result.arbitrationState), privacy: .public)")
+        }
         lastArbitrationState = result.arbitrationState
 
         // Re-check the MainActor's own `isPreviewActive` (not just whatever this frame's
@@ -787,6 +801,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         if let event = result.event {
             lastEvent = event
+            TacitLog.engine.notice("fired gesture=\(event.gesture.rawValue, privacy: .public)")
             pulseFired()
             handleFire(event)
         } else {
@@ -823,6 +838,19 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 // chokepoint (capture is still running here; that chokepoint would never fire).
                 endActiveHoldIfNeeded()
             }
+        }
+    }
+
+    /// Case-only equality for `ArbitrationState`, ignoring associated `progress`/`windowEndsAt`
+    /// values (which tick every frame while arming/armed) — used solely to gate the diagnostic
+    /// arbitration-transition log in `apply(_:generation:timestamp:)` on a genuine phase change,
+    /// never a per-frame progress/window update.
+    private func arbitrationStatesMatch(_ a: ArbitrationState, _ b: ArbitrationState) -> Bool {
+        switch (a, b) {
+        case (.disarmed, .disarmed), (.arming, .arming), (.armed, .armed):
+            return true
+        default:
+            return false
         }
     }
 
@@ -881,6 +909,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         activeHoldChord = chord
         _ = actionEnvironment.postKeyDown(chord)
+        TacitLog.actions.notice("hold began: chord=\(chord.display, privacy: .public) down")
         if isHUDEnabled {
             // `HUDController.showHold` renders "<Gesture> → holding <label>" — deliberately the
             // bare key label (chord.display, "Fn" for keyCode 63 via `KeyChord.capNames`), NOT
@@ -904,6 +933,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
         defer { hudController.endHold() }
         guard let chord = releaseActiveHold() else { return }
         _ = actionEnvironment.postKeyUp(chord)
+        TacitLog.actions.notice("hold ended: chord=\(chord.display, privacy: .public) up")
     }
 
     /// A fire of a gesture bound to `.toggleKeystroke`. Engages, releases, or swaps the latch and
@@ -950,16 +980,19 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 return
             }
             _ = actionEnvironment.postKeyDown(engaged)
+            TacitLog.actions.notice("toggle engaged: chord=\(engaged.display, privacy: .public) down")
             summary = "\(engaged.display) on"
         case .released(let released):
             // Always post the up — no trust check (this is the fix): the release direction must
             // never be gated on Accessibility, or a chord latched while trusted could never be
             // turned back off once trust is revoked.
             _ = actionEnvironment.postKeyUp(released)
+            TacitLog.actions.notice("toggle released: chord=\(released.display, privacy: .public) up")
             summary = "\(released.display) off"
         case .swapped(let released, let engaged):
             // Old-chord up always posts first — release direction, ungated, same as `.released`.
             _ = actionEnvironment.postKeyUp(released)
+            TacitLog.actions.notice("toggle swapped: chord=\(released.display, privacy: .public) up")
             guard trusted else {
                 _ = keyLatch.release()
                 latchedChord = keyLatch.active?.chord
@@ -969,6 +1002,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 return
             }
             _ = actionEnvironment.postKeyDown(engaged)
+            TacitLog.actions.notice("toggle swapped: chord=\(engaged.display, privacy: .public) down")
             summary = "\(engaged.display) on"
         }
         latchedChord = keyLatch.active?.chord
@@ -1011,6 +1045,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
         guard let chord = keyLatch.release() else { return }
         latchedChord = nil
         _ = actionEnvironment.postKeyUp(chord)
+        TacitLog.actions.notice("latch force-released: chord=\(chord.display, privacy: .public) up")
     }
 
     /// Popover "Release <key>" row (Task 5). User-initiated, so it's the one forced release that
@@ -1091,7 +1126,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// unconditionally regardless of binding state.
     private func handleFire(_ event: GestureEvent) {
         let binding = mappingStore.binding(for: event.gesture)
-        guard binding.enabled, let action = binding.action else { return }
+        guard binding.enabled, let action = binding.action else {
+            TacitLog.engine.notice(
+                "handleFire gesture=\(event.gesture.rawValue, privacy: .public) returning early: binding disabled or no action (enabled=\(binding.enabled, privacy: .public))"
+            )
+            return
+        }
 
         // Workhorse-remap plan, Task 4: `.toggleKeystroke` is engine-owned exactly like
         // `.holdKeystroke` — posted synchronously on the main actor (structural down/up ordering,
@@ -1099,6 +1139,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // detached full-press fallback, and skipping `applyDispatchOutcome`'s first-fire
         // bookkeeping (the toggle's own HUD line below is the feedback).
         if case .toggleKeystroke(let chord) = action {
+            TacitLog.engine.notice(
+                "handleFire gesture=\(event.gesture.rawValue, privacy: .public) routing to toggle branch: chord=\(chord.display, privacy: .public)"
+            )
             handleToggleFire(gesture: event.gesture, chord: chord)
             return
         }
@@ -1129,6 +1172,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // they keep falling through to `ActionDispatcher.dispatch`'s `.holdKeystroke` fallback,
         // which performs the full down-then-up press documented on that case.
         if case .holdKeystroke = action, Self.holdableGestures.contains(event.gesture) {
+            TacitLog.engine.notice(
+                "handleFire gesture=\(event.gesture.rawValue, privacy: .public) returning early: holdable gesture owns .holdKeystroke lifecycle via HoldTracker"
+            )
             return
         }
 
@@ -1146,6 +1192,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         Task.detached { [weak self] in
             let outcome = dispatcher.dispatch(action)
+            switch outcome {
+            case .performed:
+                TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> performed")
+            case .needsAccessibility:
+                TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> needsAccessibility")
+            case .failed(let message):
+                TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> failed(\(message, privacy: .public))")
+            }
             await MainActor.run {
                 self?.applyDispatchOutcome(outcome, gesture: gesture, action: action, frame: frame)
             }
