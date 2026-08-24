@@ -11,6 +11,9 @@ them — for actions that read more naturally as a motion than a shape. In dim r
 raises its own confidence thresholds rather than firing on noise, and says so in the menu bar until
 the light comes back.
 
+Gesture previews are rendered by hb-motion, a standalone Blender pipeline (separate repo) that
+exports a looping cartoon-glove animation per gesture into `Sources/Tacit/Resources/previews/`.
+
 ## Build
 
 ```
