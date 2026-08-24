@@ -19,3 +19,6 @@ playground.xcworkspace
 *.p12
 *.mobileprovision
 *.provisionprofile
+
+# Local secrets (never commit)
+.secrets/
