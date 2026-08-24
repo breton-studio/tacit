@@ -156,7 +156,7 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
     /// below.
     init(matching action: TacitAction?) {
         switch action {
-        case .none, .keystroke, .holdKeystroke: self = .keystroke
+        case .none, .keystroke, .holdKeystroke, .toggleKeystroke: self = .keystroke
         case .launchApp: self = .launchApp
         case .openURL: self = .openURL
         case .runShortcut: self = .runShortcut

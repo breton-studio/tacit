@@ -20,6 +20,19 @@ public enum TacitAction: Codable, Equatable, Sendable {
     /// files, which simply never contain it.
     case holdKeystroke(KeyChord)
 
+    /// Workhorse-remap plan, Task 1: a keystroke LATCHED by one fire and released by the next —
+    /// key-down on the first fire of a gesture bound to this action, key-up on the following fire
+    /// (of the same chord). Hands-free push-to-talk: with Fn latched, a dictation app that treats
+    /// Fn as "hold to talk" keeps listening until the user taps the gesture again. The latch is
+    /// owned by `TacitEngine` (`KeyLatch`), which routes this case's down/up lifecycle directly to
+    /// `ActionEnvironment.postKeyDown`/`postKeyUp` — never through `ActionDispatcher.dispatch(_:)`.
+    /// `dispatch(_:)` still handles a bare fire of this action (a non-engine caller with no latch
+    /// behind it) by falling back to a full press — down then up — exactly like `.holdKeystroke`.
+    /// Codable via synthesis: additive for old `mappings.json` files. An OLDER build reading a
+    /// file that contains this case fails to decode it and quarantines the file (downgrade is not
+    /// a supported path).
+    case toggleKeystroke(KeyChord)
+
     /// M3 Task 10: finds and focuses the frontmost window's main text input via the Accessibility
     /// API (no configuration — unlike every other case, it carries no associated value). The
     /// search itself lives in the app target (`LiveActionEnvironment`, since `TacitCore` stays
@@ -33,7 +46,7 @@ public enum TacitAction: Codable, Equatable, Sendable {
     /// setting attributes on another app's UI elements via the AX API).
     public var requiresAccessibility: Bool {
         switch self {
-        case .keystroke, .holdKeystroke, .focusTextInput: true
+        case .keystroke, .holdKeystroke, .toggleKeystroke, .focusTextInput: true
         case .launchApp, .openURL, .runShortcut: false
         }
     }
@@ -46,6 +59,7 @@ public enum TacitAction: Codable, Equatable, Sendable {
         // (`.holdKeystroke(KeyChord(keyCode: 63, ...))`) reads as "Hold Fn" via plain `.display` —
         // no special case needed here.
         case .holdKeystroke(let chord): "Hold " + chord.display
+        case .toggleKeystroke(let chord): "Toggle " + chord.display
         case .launchApp(_, let displayName): "Open \(displayName)"
         case .openURL(let string): string
         case .runShortcut(let name): "Shortcut: \(name)"

@@ -7,6 +7,7 @@ import Testing
 @Test func requiresAccessibilityIsTrueOnlyForKeystrokeHoldKeystrokeAndFocusTextInput() {
     #expect(TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command])).requiresAccessibility == true)
     #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).requiresAccessibility == true)
+    #expect(TacitAction.toggleKeystroke(KeyChord(keyCode: 63, modifiers: [])).requiresAccessibility == true)
     #expect(TacitAction.focusTextInput.requiresAccessibility == true)
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").requiresAccessibility == false)
     #expect(TacitAction.openURL("superwhisper://record").requiresAccessibility == false)
@@ -29,6 +30,23 @@ import Testing
     #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).summary == "Hold Fn")
 }
 
+// MARK: - toggleKeystroke (workhorse-remap plan, Task 1)
+
+@Test func toggleKeystrokeRequiresAccessibility() {
+    #expect(TacitAction.toggleKeystroke(KeyChord(keyCode: 63, modifiers: [])).requiresAccessibility == true)
+}
+
+@Test func toggleKeystrokeSummaryRendersToggleFnViaDisplay() {
+    #expect(TacitAction.toggleKeystroke(KeyChord(keyCode: 63, modifiers: [])).summary == "Toggle Fn")
+    #expect(TacitAction.toggleKeystroke(KeyChord(keyCode: 49, modifiers: [.command])).summary == "Toggle ⌘Space")
+}
+
+@Test func toggleKeystrokeCodableRoundTrips() throws {
+    let action = TacitAction.toggleKeystroke(KeyChord(keyCode: 63, modifiers: []))
+    let data = try JSONEncoder().encode(action)
+    #expect(try JSONDecoder().decode(TacitAction.self, from: data) == action)
+}
+
 @Test func tacitActionCodableRoundTrips() throws {
     let actions: [TacitAction] = [
         .keystroke(KeyChord(keyCode: 8, modifiers: [.command])),
@@ -37,6 +55,7 @@ import Testing
         .openURL("superwhisper://record"),
         .runShortcut(name: "Focus"),
         .focusTextInput,
+        .toggleKeystroke(KeyChord(keyCode: 63, modifiers: [])),
     ]
     for action in actions {
         let data = try JSONEncoder().encode(action)
@@ -240,6 +259,55 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(outcome == .failed("Couldn't press Fn"))
     #expect(spy.postKeyDownCalls == [chord])
+}
+
+// MARK: - .toggleKeystroke's normal-fire-path fallback (workhorse-remap plan, Task 1)
+
+/// A `.toggleKeystroke` dispatched through the NORMAL fire path (i.e. a non-engine caller with no
+/// `KeyLatch` behind it) must perform a full press: both halves, down and up. Same fallback shape
+/// as `.holdKeystroke` above.
+@Test func dispatchToggleKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() {
+    let spy = Spy()
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    #expect(outcome == .performed)
+    #expect(spy.postKeyDownCalls == [chord])
+    #expect(spy.postKeyUpCalls == [chord])
+    #expect(spy.postKeystrokeCalls.isEmpty)
+    #expect(spy.launchAppCalls.isEmpty)
+    #expect(spy.openURLCalls.isEmpty)
+    #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
+}
+
+/// Ordering matters: the key-down MUST be posted before the key-up (a full press with the halves
+/// reversed is nonsensical and could confuse a listening app).
+@Test func dispatchToggleKeystrokeFullPressPostsDownBeforeUp() {
+    let spy = Spy()
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    _ = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    #expect(spy.keyDirectionCalls.map(\.direction) == ["down", "up"])
+}
+
+@Test func dispatchToggleKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
+    let spy = Spy()
+    spy.isAccessibilityTrustedResult = false
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    #expect(outcome == .needsAccessibility)
+    #expect(spy.keyDirectionCalls.isEmpty)
+}
+
+@Test func dispatchToggleKeystrokeFailsWhenPostKeyDownFails() {
+    let spy = Spy()
+    spy.postKeyDownResult = false
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    // keyCode 63 has a cap name ("Fn") in `KeyChord.capNames`, so the failure message reads the
+    // key's name rather than its raw hex code.
+    #expect(outcome == .failed("Couldn't press Fn"))
+    // The up half is never attempted once the down half itself failed.
+    #expect(spy.postKeyUpCalls.isEmpty)
 }
 
 // MARK: - .focusTextInput (M3 Task 10)

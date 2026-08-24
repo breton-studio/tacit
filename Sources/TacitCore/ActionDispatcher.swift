@@ -67,7 +67,8 @@ public struct ActionDispatcher: Sendable {
         // GENERICALLY, once, up front — rather than each case re-implementing its own
         // `guard environment.isAccessibilityTrusted() else { return .needsAccessibility }`. This
         // is the invariant that guarantees every case for which `requiresAccessibility` is true
-        // (currently `.keystroke`, `.holdKeystroke`, `.focusTextInput`) gets the gate, and that a
+        // (currently `.keystroke`, `.holdKeystroke`, `.toggleKeystroke`, `.focusTextInput`) gets
+        // the gate, and that a
         // FUTURE case added with `requiresAccessibility == true` gets it automatically too,
         // without anyone having to remember to copy the guard into a new case body. Cases with
         // `requiresAccessibility == false` never call `isAccessibilityTrusted()` at all (verified
@@ -93,6 +94,18 @@ public struct ActionDispatcher: Sendable {
             // began/ended pair): dispatched through this normal fire path, it performs a full
             // press — down, then up — so the binding still does SOMETHING sensible rather than
             // silently posting a key-down with no matching key-up.
+            guard environment.postKeyDown(chord) else {
+                return .failed("Couldn't press \(chord.display)")
+            }
+            guard environment.postKeyUp(chord) else {
+                return .failed("Couldn't press \(chord.display)")
+            }
+            return .performed
+
+        case .toggleKeystroke(let chord):
+            // Same fallback shape as `.holdKeystroke` above: the latch lifecycle lives in
+            // `TacitEngine`; a bare fire through this path performs a full press so the binding
+            // still does something sensible and never leaves a key down.
             guard environment.postKeyDown(chord) else {
                 return .failed("Couldn't press \(chord.display)")
             }
