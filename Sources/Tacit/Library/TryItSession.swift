@@ -78,7 +78,11 @@ struct TryItSessionOverlay: View {
             // Cover the case where the user is already mid-gesture the instant the session opens
             // (e.g. re-entering via "Try Again" while still holding the pose from the last
             // attempt) — don't wait for the next `previewCandidate` change to notice a match that
-            // already holds true right now.
+            // already holds true right now. The same immediate check also means a MOMENTARY
+            // gesture (tap/swipe) that just fired can still register here off `PipelineCore`'s
+            // still-live 0.6s preview latch, if the session is dismissed and reopened (via "Try
+            // Again") within that window — an accepted false positive, always in the user's favor
+            // (an undeserved success, never an undeserved failure), so left unguarded.
             checkMatch(engine.previewCandidate)
             try? await Task.sleep(for: .seconds(Self.sessionDuration))
             guard !Task.isCancelled, verdict == .waiting else { return }

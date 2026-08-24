@@ -107,6 +107,24 @@ import Testing
     }
 }
 
+@Test func detectorBackedGesturesIsEveryGestureExceptTheThreeWithNoDetector() {
+    // Task 7 fix round (Medium finding): pins the exact set so a future detector landing for
+    // .palmPush/.wave/.twoHandFrame forces a conscious edit to `GestureCatalog.undetectedGestures`
+    // (and this test) rather than silently going stale.
+    let expectedUndetected: Set<GestureID> = [.palmPush, .wave, .twoHandFrame]
+    #expect(GestureCatalog.undetectedGestures == expectedUndetected)
+    #expect(GestureCatalog.detectorBackedGestures == Set(GestureID.allCases).subtracting(expectedUndetected))
+}
+
+@Test func catalogEntryIsDetectorBackedMatchesGestureCatalogsSet() {
+    for entry in GestureCatalog.entries {
+        #expect(
+            entry.isDetectorBacked == GestureCatalog.detectorBackedGestures.contains(entry.id),
+            "\(entry.id).isDetectorBacked disagrees with GestureCatalog.detectorBackedGestures"
+        )
+    }
+}
+
 @Test func cannedFrameMatchesItsOwnEntryID() {
     // `CatalogEntry.init` derives `cannedFrame` from `CannedFrames.frame(for: id)` — this just
     // guards that indirection against ever drifting (e.g. a future hand-edit that passes a

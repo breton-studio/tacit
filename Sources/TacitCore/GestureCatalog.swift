@@ -45,6 +45,17 @@ public struct CatalogEntry: Sendable {
     /// don't squeeze"), never an exclamation.
     public var hint: String
 
+    /// Task 7 fix round (Medium finding): whether ANY code path in `TacitCore` — production or
+    /// preview — can ever produce this gesture as a `GestureCandidate`. `false` for exactly
+    /// `GestureCatalog.undetectedGestures` (see that set's doc comment for which three and why).
+    /// A Try-It session for a non-detector-backed gesture would always time out no matter how well
+    /// the user performs it, which reads as user error rather than a missing feature — callers
+    /// (`CardDetailView`) use this to show honest "still in the works" copy instead of a "Try It"
+    /// button that can never succeed.
+    public var isDetectorBacked: Bool {
+        !GestureCatalog.undetectedGestures.contains(id)
+    }
+
     public init(
         id: GestureID,
         displayName: String,
@@ -368,6 +379,28 @@ public enum GestureCatalog {
                 + "controlled motion counts more than speed."
         ),
     ]
+
+    /// Task 7 fix round (Medium finding): the exact `GestureID`s with NO detector anywhere in
+    /// `TacitCore` — no code path, production or preview, can ever produce them as a
+    /// `GestureCandidate` (verified against `StaticPoseClassifier` and every `PipelineCore`
+    /// detector, production and preview alike). Detectors for these three are parked to the
+    /// post-M4 backlog by plan ruling:
+    ///  - `.palmPush` — needs a depth/scale-toward-camera detector; none exists.
+    ///  - `.wave` — needs an oscillation (side-to-side reversal) detector; none exists.
+    ///  - `.twoHandFrame` — needs a two-hand detector; `HandPoseDetector` only tracks one hand.
+    ///
+    /// This is the single source of truth `CatalogEntry.isDetectorBacked`/`detectorBackedGestures`
+    /// below are derived from, so landing a detector for any of these three forces a conscious
+    /// edit here (and to the test pinning this exact set) instead of silently going stale.
+    public static let undetectedGestures: Set<GestureID> = [.palmPush, .wave, .twoHandFrame]
+
+    /// The complement of `undetectedGestures`: every `GestureID` at least one detector (production
+    /// or preview) can actually produce. Equivalent to, and kept in lockstep with,
+    /// `CatalogEntry.isDetectorBacked` — this is the set-valued form for callers that want to test
+    /// membership without looking an entry up first.
+    public static var detectorBackedGestures: Set<GestureID> {
+        Set(GestureID.allCases).subtracting(undetectedGestures)
+    }
 
     /// Section editorial headers (spec §5): one quiet, factual line per tier.
     public static let tierEditorial: [GestureTier: String] = [

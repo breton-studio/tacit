@@ -172,13 +172,25 @@ struct CardDetailView: View {
 
             PerformToPreviewStrip(entry: entry, engine: engine)
 
-            // Task 7: the timed, verdict-bearing session — distinct from the strip above, which
-            // just ambiently lights up while the card is open. Hidden while the overlay is already
-            // showing rather than merely disabled, since a disabled full-width row would otherwise
-            // sit uselessly behind the overlay it triggers.
-            if !isTryItActive {
-                Button("Try It", action: startTryIt)
-                    .buttonStyle(TacitButtonStyle())
+            // Task 7 fix round (Medium finding): `.palmPush`/`.wave`/`.twoHandFrame` have no
+            // detector anywhere in `TacitCore` (production or preview) — a Try-It session for one
+            // of them would always time out no matter how well the user performs it, reading as
+            // user error rather than a missing feature. Show honest, quiet copy instead of a
+            // button that can never succeed; the strip above still just never lights for these,
+            // same as before.
+            if entry.isDetectorBacked {
+                // The timed, verdict-bearing session — distinct from the strip above, which just
+                // ambiently lights up while the card is open. Hidden while the overlay is already
+                // showing rather than merely disabled, since a disabled full-width row would
+                // otherwise sit uselessly behind the overlay it triggers.
+                if !isTryItActive {
+                    Button("Try It", action: startTryIt)
+                        .buttonStyle(TacitButtonStyle())
+                }
+            } else {
+                Text("Recognition for this gesture is still in the works.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }
