@@ -50,12 +50,7 @@ struct CardDetailView: View {
                     Text(entry.displayName)
                         .font(.title2.weight(.semibold))
 
-                    Text(SpecimenCopy.metadataLine(for: entry))
-                        .font(.caption)
-                        .tracking(0.4)
-                        .textCase(.uppercase)
-                        .monospacedDigit()
-                        .foregroundStyle(Color.secondary)
+                    metadataBlock
 
                     bindingLine
                 }
@@ -63,10 +58,11 @@ struct CardDetailView: View {
                 if !entry.isReserved {
                     Toggle("Enabled", isOn: enabledBinding)
                         .toggleStyle(TacitToggleStyle())
+                        .disabled(store.binding(for: entry.id).action == nil)
                 }
 
                 Text(entry.editorial)
-                    .font(.body)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -109,8 +105,8 @@ struct CardDetailView: View {
     private var actionBinderSection: some View {
         if !entry.isReserved {
             VStack(alignment: .leading, spacing: 8) {
-                Text("ACTION")
-                    .font(.caption.weight(.semibold))
+                Text("Action")
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 ActionBinderView(entry: entry, store: store)
@@ -126,8 +122,8 @@ struct CardDetailView: View {
     /// doing it, with instant feedback.
     private var performToPreviewSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TRY IT")
-                .font(.caption.weight(.semibold))
+            Text("Try it")
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             PerformToPreviewStrip(entry: entry, engine: engine)
@@ -142,17 +138,28 @@ struct CardDetailView: View {
 
     // MARK: - Rows
 
+    private var metadataBlock: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(SpecimenCopy.kindLabel(for: entry))
+            Text(SpecimenCopy.ergonomicsLine(for: entry))
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+
     @ViewBuilder
     private var bindingLine: some View {
         if entry.isReserved {
             Text(SpecimenCopy.reservedCopy(for: entry.id))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-        } else {
-            let (text, isSecondary) = SpecimenCopy.bindingLine(for: store.binding(for: entry.id))
-            Text(text)
+        } else if let summary = store.binding(for: entry.id).configuredActionSummary {
+            Text(summary)
                 .font(.callout)
-                .foregroundStyle(isSecondary ? .secondary : .primary)
+        } else {
+            Text("Choose an action below before enabling this gesture.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -166,8 +173,9 @@ struct CardDetailView: View {
         Binding(
             get: { store.binding(for: entry.id).enabled },
             set: { newValue in
-                var updated = store.binding(for: entry.id)
-                updated.enabled = newValue
+                guard case .update(let updated) = store.binding(for: entry.id).enableRequest(newValue) else {
+                    return
+                }
                 store.setBinding(updated, for: entry.id)
             }
         )

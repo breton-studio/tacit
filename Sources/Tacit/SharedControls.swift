@@ -49,6 +49,35 @@ struct TacitButtonStyle: ButtonStyle {
     }
 }
 
+/// A quiet, left-aligned row for frequent utility actions in the popover and for the card's
+/// action doorway. Unlike `TacitButtonStyle`, it does not center or noticeably shrink the whole
+/// row; the only treatment is a near-monochrome pressed surface using the existing press token.
+struct TacitUtilityRowButtonStyle: ButtonStyle {
+    var showsRestingSurface = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(
+                        Color.primary.opacity(
+                            configuration.isPressed ? 0.07 : (showsRestingSurface ? 0.035 : 0)
+                        )
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
+            .animation(
+                TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback),
+                value: configuration.isPressed
+            )
+    }
+}
+
 /// Custom toggle style mirroring `TacitButtonStyle`'s approach: macOS's native `.switch` style
 /// only treats the switch control itself as tappable, and doesn't reliably widen that hit area
 /// just because an outer `.frame`/`.contentShape` says the row is taller — so this style's
@@ -70,6 +99,7 @@ struct TacitToggleStyle: ToggleStyle {
             Spacer(minLength: 8)
             Toggle("", isOn: isOnBinding)
                 .toggleStyle(.switch)
+                .tint(Color.primary)
                 .labelsHidden()
                 .allowsHitTesting(false)
         }

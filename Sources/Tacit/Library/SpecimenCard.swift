@@ -4,16 +4,18 @@ import TacitCore
 /// Editorial copy shared between the compact `SpecimenCard` and its grown-up `CardDetailView` —
 /// factored out so the two surfaces can never say something different about the same gesture.
 enum SpecimenCopy {
-    /// "Static · Low fatigue · Medium FP" — the quiet tabular metadata line (spec §5's "comfort
-    /// tier, false-positive risk, static/dynamic... set in small tabular type").
-    static func metadataLine(for entry: CatalogEntry) -> String {
-        let kind: String
+    /// A plain-language gesture kind, kept separate from the ergonomic sentence so every card gets
+    /// the same two-line metadata slot without relying on punctuation as layout.
+    static func kindLabel(for entry: CatalogEntry) -> String {
         switch entry.kind {
-        case .staticPose: kind = "Static"
-        case .dynamic: kind = "Dynamic"
-        case .twoHand: kind = "Two-hand"
+        case .staticPose: "Static"
+        case .dynamic: "Dynamic"
+        case .twoHand: "Two-hand"
         }
-        return "\(kind) · \(entry.comfort) · \(entry.falsePositiveRisk) FP"
+    }
+
+    static func ergonomicsLine(for entry: CatalogEntry) -> String {
+        "\(entry.comfort), \(entry.falsePositiveRisk.lowercased()) risk"
     }
 
     /// The two reserved gestures never show a binding line — they show what they do for the
@@ -27,14 +29,14 @@ enum SpecimenCopy {
         }
     }
 
-    /// "fires → ⌘C" when enabled and bound to an action; "not bound" (quiet) otherwise. Reserved
-    /// gestures are handled separately by `reservedCopy` — callers should check `isReserved` first.
-    static func bindingLine(for binding: GestureBinding) -> (text: String, isSecondary: Bool) {
-        if binding.enabled, let action = binding.action {
-            return ("fires → \(action.summary)", false)
+    static func reservedActionName(for id: GestureID) -> String {
+        switch id {
+        case .looseFist: "Arms Tacit"
+        case .openPalm: "Disarms Tacit"
+        default: "System reserved"
         }
-        return ("not bound", true)
     }
+
 }
 
 /// The specimen book's unit of interface (spec §5): a gesture's constellation, name, quiet
@@ -53,10 +55,14 @@ struct SpecimenCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
+    @ScaledMetric(relativeTo: .body) private var cardHeight: CGFloat = 332
+    @ScaledMetric(relativeTo: .body) private var titleSlotHeight: CGFloat = 38
+    @ScaledMetric(relativeTo: .callout) private var metadataSlotHeight: CGFloat = 52
+
     private static let cornerRadius: CGFloat = 16
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             ConstellationRenderer(
                 frame: entry.cannedFrame,
                 lineWidth: 1.5,
@@ -76,28 +82,28 @@ struct SpecimenCard: View {
                 enabled: !reduceMotion,
                 isSource: true
             )
-            .frame(height: 96)
+            .frame(height: 88)
             .frame(maxWidth: .infinity)
 
             Text(entry.displayName)
-                .font(.headline)
-                .lineLimit(1)
+                .font(.body.weight(.semibold))
+                .lineLimit(2)
+                .frame(height: titleSlotHeight, alignment: .topLeading)
 
-            Text(SpecimenCopy.metadataLine(for: entry))
-                .font(.caption)
-                .tracking(0.4)
-                .textCase(.uppercase)
-                .monospacedDigit()
-                .foregroundStyle(Color.secondary)
+            metadataBlock
 
-            bindingLine
+            actionRow
 
             if !entry.isReserved {
                 Toggle("Enabled", isOn: enabledBinding)
                     .toggleStyle(TacitToggleStyle())
+                    .frame(height: 44)
+            } else {
+                reservedStateRow
             }
         }
         .padding(16)
+        .frame(height: cardHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                 .fill(.regularMaterial)
@@ -143,27 +149,83 @@ struct SpecimenCard: View {
         .allowsHitTesting(!isExpanded)
     }
 
-    @ViewBuilder
-    private var bindingLine: some View {
-        if entry.isReserved {
-            Text(SpecimenCopy.reservedCopy(for: entry.id))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        } else {
-            let (text, isSecondary) = SpecimenCopy.bindingLine(for: store.binding(for: entry.id))
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(isSecondary ? .secondary : .primary)
+    private var metadataBlock: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(SpecimenCopy.kindLabel(for: entry))
+                .lineLimit(1)
+            Text(SpecimenCopy.ergonomicsLine(for: entry))
+                .lineLimit(2)
         }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .frame(height: metadataSlotHeight, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var actionRow: some View {
+        if entry.isReserved {
+            HStack(spacing: 8) {
+                Text("System action")
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(SpecimenCopy.reservedActionName(for: entry.id))
+                    .lineLimit(1)
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.secondary.opacity(0.06))
+            )
+        } else {
+            Button(action: onTap) {
+                HStack(spacing: 8) {
+                    Text("Action")
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(store.binding(for: entry.id).configuredActionSummary ?? "Set action…")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.forward")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                .font(.callout)
+            }
+            .buttonStyle(TacitUtilityRowButtonStyle())
+            .accessibilityLabel(actionAccessibilityLabel)
+        }
+    }
+
+    private var reservedStateRow: some View {
+        HStack(spacing: 8) {
+            Text("Always enabled")
+            Spacer(minLength: 8)
+            Image(systemName: "lock.fill")
+                .accessibilityHidden(true)
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+
+    private var actionAccessibilityLabel: String {
+        if let summary = store.binding(for: entry.id).configuredActionSummary {
+            return "Action: \(summary). Edit action."
+        }
+        return "Set action"
     }
 
     private var enabledBinding: Binding<Bool> {
         Binding(
             get: { store.binding(for: entry.id).enabled },
             set: { newValue in
-                var updated = store.binding(for: entry.id)
-                updated.enabled = newValue
-                store.setBinding(updated, for: entry.id)
+                switch store.binding(for: entry.id).enableRequest(newValue) {
+                case .update(let updated):
+                    store.setBinding(updated, for: entry.id)
+                case .configureAction:
+                    onTap()
+                }
             }
         )
     }

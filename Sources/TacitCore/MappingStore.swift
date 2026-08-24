@@ -17,6 +17,30 @@ public struct GestureBinding: Codable, Equatable, Sendable {
     }
 }
 
+/// The result of asking to change a gesture's enabled state. Enabling an unbound gesture cannot
+/// produce useful behavior, so the UI redirects that intent into action configuration instead of
+/// persisting an enabled no-op.
+public enum GestureEnableRequest: Equatable, Sendable {
+    case update(GestureBinding)
+    case configureAction
+}
+
+public extension GestureBinding {
+    /// The configured action is independent of whether recognition is currently enabled.
+    var configuredActionSummary: String? { action?.summary }
+
+    /// Resolves an enable-toggle interaction without discarding an existing action.
+    func enableRequest(_ newValue: Bool) -> GestureEnableRequest {
+        if newValue, action == nil {
+            return .configureAction
+        }
+
+        var updated = self
+        updated.enabled = newValue
+        return .update(updated)
+    }
+}
+
 /// The on-disk wire format for `mappings.json`. Versioned so a future incompatible change to
 /// `TacitAction`'s Codable shape (see CARRY-FORWARD note on `TacitAction`) can be detected and
 /// recovered from instead of crashing.

@@ -27,13 +27,12 @@ struct PopoverView<Engine: EngineUIState>: View {
     #endif
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             header
+            pauseButton
 
             hairline
 
-            masterToggleRow
-            pauseButton
             hudToggleRow
             launchAtLoginRow
 
@@ -56,8 +55,8 @@ struct PopoverView<Engine: EngineUIState>: View {
             openLibraryButton
             quitButton
         }
-        .padding(16)
-        .frame(width: 280)
+        .padding(12)
+        .frame(width: 272)
         .background(.ultraThinMaterial)
         .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: engine.warning)
         // Debug-only reveal, no animation magic number needed: an instant show/hide while ⌥ is
@@ -70,13 +69,16 @@ struct PopoverView<Engine: EngineUIState>: View {
     // MARK: - Rows
 
     private var header: some View {
-        HStack(spacing: 10) {
-            MenuBarGlyphView(state: engine.glyphState, size: 26)
-            Text(stateLine)
-                .font(.body.weight(.medium))
-            Spacer(minLength: 0)
+        Toggle(isOn: $engine.isEnabled) {
+            HStack(spacing: 10) {
+                MenuBarGlyphView(state: engine.glyphState, size: 26)
+                Text(stateLine)
+                    .font(.body.weight(.semibold))
+            }
         }
-        .frame(minHeight: 44)
+        .toggleStyle(TacitToggleStyle())
+        .accessibilityLabel("Tacit is \(stateLine.lowercased())")
+        .frame(minHeight: 52)
     }
 
     /// Plain verbs, per brief: "Watching" / "Paused" / "Armed" / "Fired ✓".
@@ -89,22 +91,20 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
     }
 
-    private var masterToggleRow: some View {
-        // Label text tracks `glyphState`, not `isEnabled` directly: `isEnabled` stays `true`
-        // during a `pause(for:)` (e.g. "Pause for an Hour"), and this row must still read
-        // "Paused" — matching the header — rather than disagreeing with it. The toggle itself
-        // stays bound to `isEnabled`, which is the only thing it's meant to control.
-        Toggle(isOn: $engine.isEnabled) {
-            Text(engine.glyphState == .paused ? "Paused" : "Tacit is watching")
-        }
-        .toggleStyle(TacitToggleStyle())
-    }
-
     private var pauseButton: some View {
-        Button("Pause for an Hour") {
+        Button {
             engine.pause(for: 3600)
+        } label: {
+            HStack(spacing: 8) {
+                Text("Pause for an hour")
+                Spacer(minLength: 8)
+                Image(systemName: "clock")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .font(.body)
         }
-        .buttonStyle(TacitButtonStyle())
+        .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
     }
 
     /// Finding I1 (spec §4): lets users disable the HUD confirmation panel while keeping glyph
@@ -112,16 +112,20 @@ struct PopoverView<Engine: EngineUIState>: View {
     private var hudToggleRow: some View {
         Toggle(isOn: $engine.isHUDEnabled) {
             Text("Show confirmations")
+                .font(.body)
         }
         .toggleStyle(TacitToggleStyle())
+        .padding(.horizontal, 10)
     }
 
     private var launchAtLoginRow: some View {
         VStack(alignment: .leading, spacing: 2) {
             Toggle(isOn: launchAtLoginBinding) {
                 Text("Launch at Login")
+                    .font(.body)
             }
             .toggleStyle(TacitToggleStyle())
+            .padding(.horizontal, 10)
 
             if let launchAtLoginErrorMessage {
                 Text(launchAtLoginErrorMessage)
@@ -145,22 +149,37 @@ struct PopoverView<Engine: EngineUIState>: View {
     }
 
     private var openLibraryButton: some View {
-        Button("Open Library") {
+        Button {
             openWindow(id: "library")
+        } label: {
+            HStack(spacing: 8) {
+                Text("Open Library")
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.forward")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .font(.body)
         }
-        .buttonStyle(TacitButtonStyle())
+        .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
     }
 
     private var quitButton: some View {
-        Button("Quit Tacit") {
+        Button {
             NSApplication.shared.terminate(nil)
+        } label: {
+            Text("Quit Tacit")
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(TacitButtonStyle())
+        .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
         .keyboardShortcut("q")
     }
 
     private var hairline: some View {
-        Divider().opacity(0.5)
+        Divider()
+            .opacity(0.45)
+            .padding(.vertical, 6)
     }
 
     // MARK: - Fixture debug section (⌥-revealed)

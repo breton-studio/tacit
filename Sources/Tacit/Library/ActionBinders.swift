@@ -66,17 +66,21 @@ struct ActionBinderView: View {
         }
     }
 
-    /// "fires → ⌘C" with a checkmark, per brief — shown regardless of which segment is
-    /// currently open, so it never looks like the binding vanished while browsing other kinds.
+    /// The configured action stays visible regardless of which segment is open. Enabled state is
+    /// reported separately so a disabled-but-configured gesture never masquerades as unbound.
     @ViewBuilder
     private var currentBindingRow: some View {
         if let action = store.binding(for: entry.id).action {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("fires → \(action.summary)")
                     .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(action.summary)
+                    .font(.callout)
+                Spacer(minLength: 8)
+                Text(store.binding(for: entry.id).enabled ? "Enabled" : "Off")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }

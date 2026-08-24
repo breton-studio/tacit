@@ -83,6 +83,32 @@ private func makeTempDirectory() -> URL {
     #expect(binding.enabled == false)
 }
 
+@Test func disabledConfiguredGestureStillPresentsItsAction() {
+    let binding = GestureBinding(enabled: false, action: .runShortcut(name: "Focus"))
+
+    #expect(binding.configuredActionSummary == "Shortcut: Focus")
+}
+
+@Test func enablingUnboundGestureRequestsActionConfiguration() {
+    let binding = GestureBinding(enabled: false, action: nil)
+
+    #expect(binding.enableRequest(true) == .configureAction)
+}
+
+@Test func enablingConfiguredGesturePreservesItsAction() {
+    let action = TacitAction.openURL("superwhisper://record")
+    let binding = GestureBinding(enabled: false, action: action)
+
+    #expect(binding.enableRequest(true) == .update(GestureBinding(enabled: true, action: action)))
+}
+
+@Test func disablingGesturePreservesItsConfiguredAction() {
+    let action = TacitAction.launchApp(bundleID: "com.apple.Safari", displayName: "Safari")
+    let binding = GestureBinding(enabled: true, action: action)
+
+    #expect(binding.enableRequest(false) == .update(GestureBinding(enabled: false, action: action)))
+}
+
 // MARK: - Reserved gestures are never bindable
 
 @MainActor
