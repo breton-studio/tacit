@@ -52,7 +52,7 @@ private let fn = KeyChord(keyCode: 63, modifiers: [])
 
 @MainActor
 @Test func firstLaunchReservedGesturesAreEnabledWithNilAction() {
-    let store = MappingStore(directory: makeTempDirectory())
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
     #expect(store.binding(for: .looseFist) == GestureBinding(enabled: true, action: nil))
     #expect(store.binding(for: .openPalm) == GestureBinding(enabled: true, action: nil))
 }
@@ -77,7 +77,7 @@ private let fn = KeyChord(keyCode: 63, modifiers: [])
 
 @MainActor
 @Test func rotateAndScrollSplitIDsHaveExpectedDisabledDefaults() {
-    let store = MappingStore(directory: makeTempDirectory())
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
     #expect(store.binding(for: .twoFingerScrollUp) ==
         GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: []))))
     #expect(store.binding(for: .twoFingerScrollDown) ==
@@ -91,17 +91,18 @@ private let fn = KeyChord(keyCode: 63, modifiers: [])
 @MainActor
 @Test func setBindingPersistsAcrossASecondStoreInstance() {
     let dir = makeTempDirectory()
-    let store1 = MappingStore(directory: dir)
+    let flags = makeTempUserDefaults()
+    let store1 = MappingStore(directory: dir, userDefaults: flags)
     let newBinding = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control])))
     store1.setBinding(newBinding, for: .swipeLeft)
 
-    let store2 = MappingStore(directory: dir)
+    let store2 = MappingStore(directory: dir, userDefaults: flags)
     #expect(store2.binding(for: .swipeLeft) == newBinding)
 }
 
 @MainActor
 @Test func setBindingOnUnboundGestureUsesSensibleDisabledDefault() {
-    let store = MappingStore(directory: makeTempDirectory())
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
     let binding = store.binding(for: .wave)
     #expect(binding.enabled == false)
 }
@@ -252,13 +253,14 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
 @MainActor
 @Test func setBindingOnReservedGestureIsANoOp() {
     let dir = makeTempDirectory()
-    let store1 = MappingStore(directory: dir)
+    let flags = makeTempUserDefaults()
+    let store1 = MappingStore(directory: dir, userDefaults: flags)
     let attempted = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command])))
     store1.setBinding(attempted, for: .looseFist)
     #expect(store1.binding(for: .looseFist) == GestureBinding(enabled: true, action: nil))
 
     // Also confirm it didn't get persisted as a mutation.
-    let store2 = MappingStore(directory: dir)
+    let store2 = MappingStore(directory: dir, userDefaults: flags)
     #expect(store2.binding(for: .looseFist) == GestureBinding(enabled: true, action: nil))
 }
 
@@ -279,14 +281,18 @@ private struct V1MappingsFile: Codable {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let fileURL = dir.appendingPathComponent("mappings.json")
 
-    let victoryBinding = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))
+    // A deliberately customized chord (⌥⌘Tab) — NOT the rev-3 "old" value for `.victory`
+    // (`enabled: true, .control`) — so this v1→v2 migration test stays decoupled from the
+    // defaults-revision chain: it must only prove migration preserves the binding, not get
+    // topped up to a newer default because it coincidentally matches an old one.
+    let victoryBinding = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command, .option])))
     let v1 = V1MappingsFile(version: 1, bindings: [
         "wristRotate": GestureBinding(enabled: true, action: nil),
         "victory": victoryBinding,
     ])
     try JSONEncoder().encode(v1).write(to: fileURL)
 
-    let store = MappingStore(directory: dir)
+    let store = MappingStore(directory: dir, userDefaults: makeTempUserDefaults())
 
     // The surviving binding carried forward intact.
     #expect(store.binding(for: .victory) == victoryBinding)
@@ -312,7 +318,7 @@ private struct V1MappingsFile: Codable {
     let fileURL = dir.appendingPathComponent("mappings.json")
     try Data("not valid json at all { { {".utf8).write(to: fileURL)
 
-    let store = MappingStore(directory: dir)
+    let store = MappingStore(directory: dir, userDefaults: makeTempUserDefaults())
     #expect(store.bindings == MappingStore.defaultBindings())
 
     let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)
@@ -333,7 +339,7 @@ private struct V1MappingsFile: Codable {
     let futureFormat = "{\"version\": 99, \"bindings\": {}}"
     try Data(futureFormat.utf8).write(to: fileURL)
 
-    let store = MappingStore(directory: dir)
+    let store = MappingStore(directory: dir, userDefaults: makeTempUserDefaults())
     #expect(store.bindings == MappingStore.defaultBindings())
 
     let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)
@@ -348,7 +354,7 @@ private struct V1MappingsFile: Codable {
     let fileURL = dir.appendingPathComponent("mappings.json")
     try Data([0xFF, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]).write(to: fileURL)
 
-    let store = MappingStore(directory: dir)
+    let store = MappingStore(directory: dir, userDefaults: makeTempUserDefaults())
     #expect(store.bindings == MappingStore.defaultBindings())
 }
 
@@ -358,18 +364,19 @@ private struct V1MappingsFile: Codable {
 @MainActor
 @Test func twoSuccessiveCorruptRecoveriesPreserveBothQuarantinedFiles() throws {
     let dir = makeTempDirectory()
+    let flags = makeTempUserDefaults()
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let fileURL = dir.appendingPathComponent("mappings.json")
 
     try Data("first corrupt payload".utf8).write(to: fileURL)
-    _ = MappingStore(directory: dir)
+    _ = MappingStore(directory: dir, userDefaults: flags)
 
     let firstQuarantined = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         .filter { $0.hasPrefix("mappings.json.corrupt-") }
     #expect(firstQuarantined.count == 1)
 
     try Data("second corrupt payload".utf8).write(to: fileURL)
-    _ = MappingStore(directory: dir)
+    _ = MappingStore(directory: dir, userDefaults: flags)
 
     let afterSecondRecovery = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         .filter { $0.hasPrefix("mappings.json.corrupt-") }
