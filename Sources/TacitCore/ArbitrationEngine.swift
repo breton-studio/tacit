@@ -10,6 +10,11 @@ public struct ArbitrationTuning: Sendable {
     public var debounceFrames: Int = 3
     /// Minimum time between two fires of the *same* gesture.
     public var cooldown: TimeInterval = 0.8
+    /// Minimum time between two fires of the *same* gesture, for gestures in
+    /// `ArbitrationEngine.repeatableGestures` (rotate/scroll ticks) — shorter than `cooldown` so a
+    /// sustained motion can emit a tick per increment instead of being rate-limited like a discrete
+    /// momentary gesture.
+    public var repeatCooldown: TimeInterval = 0.2
     /// Confidence required for a frame to *start* (or restart, after a gesture switch) a debounce count.
     public var enterConfidence: Double = 0.6
     /// Confidence required for a frame to *continue* an already-started debounce count (hysteresis).
@@ -47,6 +52,13 @@ public final class ArbitrationEngine {
 
     /// Last time each gesture successfully fired an event, for per-gesture cooldown.
     private var lastFiredAt: [GestureID: TimeInterval] = [:]
+
+    /// Gestures that emit a *repeated* tick per motion increment while engaged (wrist-rotate,
+    /// two-finger-scroll) rather than a single discrete fire. These use `tuning.repeatCooldown`
+    /// instead of `tuning.cooldown` in `ingestPreDebounced`'s per-gesture cooldown check.
+    public static let repeatableGestures: Set<GestureID> = [
+        .wristRotateCW, .wristRotateCCW, .twoFingerScrollUp, .twoFingerScrollDown
+    ]
 
     public init(tuning: ArbitrationTuning = ArbitrationTuning()) {
         self.tuning = tuning
@@ -94,8 +106,10 @@ public final class ArbitrationEngine {
     /// Fires iff: `state` is `.armed` AND `now` is still inside that window AND
     /// `candidate.confidence >= enterConfidence` AND `candidate.gesture` isn't reserved
     /// (`.looseFist`/`.openPalm` are never fireable through either path) AND the per-gesture
-    /// cooldown is clear. On fire, extends `windowEndsAt` to `now + commandWindow` — identical to
-    /// a normal `ingest` fire — and records the cooldown. Never touches `armingStartAt`,
+    /// cooldown is clear — `tuning.repeatCooldown` for gestures in `repeatableGestures`
+    /// (rotate/scroll ticks, so a sustained motion can fire on every increment), `tuning.cooldown`
+    /// for everything else. On fire, extends `windowEndsAt` to `now + commandWindow` — identical
+    /// to a normal `ingest` fire — and records the cooldown. Never touches `armingStartAt`,
     /// `debounceGesture`, or `debounceCount`, so it can neither arm/disarm the clutch nor perturb
     /// an in-flight static-pose debounce running through `ingest`.
     public func ingestPreDebounced(_ candidate: GestureCandidate, at now: TimeInterval) -> GestureEvent? {
@@ -104,7 +118,8 @@ public final class ArbitrationEngine {
         guard !GestureCatalog.entry(for: candidate.gesture).isReserved else { return nil }
 
         let gesture = candidate.gesture
-        if let last = lastFiredAt[gesture], now - last < tuning.cooldown {
+        let cooldown = Self.repeatableGestures.contains(gesture) ? tuning.repeatCooldown : tuning.cooldown
+        if let last = lastFiredAt[gesture], now - last < cooldown {
             return nil
         }
 

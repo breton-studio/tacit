@@ -319,3 +319,92 @@ func feed(
         return
     }
 }
+
+// MARK: - Repeatable-gesture cooldown (rotate/scroll ticks; Task 4)
+
+// MARK: 17. Repeatable gesture ticks spaced beyond `repeatCooldown` (0.2s) all fire.
+
+@Test func repeatableTicksBeyondRepeatCooldownAllFire() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    var events: [GestureEvent] = []
+    for i in 0..<5 {
+        let t = 1.0 + Double(i) * 0.25
+        let candidate = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t)
+        if let event = e.ingestPreDebounced(candidate, at: t) {
+            events.append(event)
+        }
+    }
+    #expect(events.count == 5)
+}
+
+// MARK: 18. Repeatable gesture ticks spaced at 0.1s (under `repeatCooldown`) throttle: a tick only
+// fires once at least 0.2s has elapsed since the last fire. Ticks land at t = 1.0, 1.1, 1.2, 1.3,
+// 1.4; measured from the last *fire* (not the last tick), tick 0 fires (nothing fired yet), tick 1
+// is 0.1s after tick 0 (throttled), tick 2 is ~0.1999...s after tick 0 (still under 0.2s —
+// throttled), tick 3 is 0.3s after tick 0 (clears the cooldown — fires), tick 4 is ~0.1s after
+// tick 3 (throttled). Computed exactly (not assumed) because `TimeInterval` accumulation via
+// repeated `+0.1` doesn't land on an exact 0.2s boundary.
+@Test func repeatableTicksUnderRepeatCooldownThrottleToComputedPattern() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    var fired: [Bool] = []
+    for i in 0..<5 {
+        let t = 1.0 + Double(i) * 0.1
+        let candidate = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t)
+        fired.append(e.ingestPreDebounced(candidate, at: t) != nil)
+    }
+    #expect(fired == [true, false, false, true, false])
+}
+
+// MARK: 19. A non-repeatable momentary gesture still uses the 0.8s `cooldown`, not `repeatCooldown`
+// — ticks 0.25s apart fire at t = 1.0 (nothing fired yet) and then not again until the elapsed
+// time since that fire reaches 0.8s, which happens at t = 2.0 (4 * 0.25s later); the three ticks in
+// between (1.25, 1.5, 1.75) are all still within the 0.8s window and are throttled.
+@Test func nonRepeatableMomentaryStillUsesFullCooldown() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    var fired: [Bool] = []
+    for i in 0..<5 {
+        let t = 1.0 + Double(i) * 0.25
+        let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: t)
+        fired.append(e.ingestPreDebounced(candidate, at: t) != nil)
+    }
+    #expect(fired == [true, false, false, false, true])
+}
+
+// MARK: 20. Each accepted repeatable tick extends `windowEndsAt` to `now + commandWindow`, same
+// as any other `ingestPreDebounced` fire.
+
+@Test func repeatableTicksExtendWindow() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    for i in 0..<3 {
+        let t = 1.0 + Double(i) * 0.25
+        let candidate = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t)
+        #expect(e.ingestPreDebounced(candidate, at: t) != nil)
+        guard case .armed(let windowEndsAt) = e.state else {
+            Issue.record("expected still armed after tick, got \(e.state)")
+            return
+        }
+        #expect(windowEndsAt == t + ArbitrationTuning().commandWindow)
+    }
+}
+
+// MARK: 21. Repeatable-gesture ticks while disarmed do nothing — the existing invariant
+// (`ingestPreDebounced` is silent outside `.armed`) holds unchanged for the new repeatable set.
+
+@Test func repeatableTicksSilentWhenDisarmed() {
+    let e = ArbitrationEngine()
+    let candidate = GestureCandidate(gesture: .twoFingerScrollUp, confidence: 0.95, timestamp: 0)
+    #expect(e.ingestPreDebounced(candidate, at: 0) == nil)
+    #expect(e.state == .disarmed)
+}
