@@ -12,10 +12,10 @@ import Foundation
 /// than a spurious ~350° jump.
 ///
 /// **Sign convention:** in this un-mirrored, y-up space, a *decreasing* atan2 angle is clockwise
-/// as the user sees it (picture the vector sweeping from pointing up-and-right, through up,
-/// toward up-and-left — that reads as a clockwise turn of the wrist from the user's viewpoint,
-/// and the angle is falling). So a negative accumulated delta is `.wristRotateCW`; a positive one
-/// is `.wristRotateCCW`.
+/// as the user sees it (picture the vector sweeping from pointing up-and-left (135°), through up
+/// (90°), toward up-and-right (45°) — that reads as a clockwise turn of the wrist from the user's
+/// viewpoint, and the angle is falling). So a negative accumulated delta is `.wristRotateCW`; a
+/// positive one is `.wristRotateCCW`.
 ///
 /// **Accumulation and ticking:** `netArcDegrees` is the signed sum of every wrapped delta since
 /// engagement began (i.e. position relative to the fisted pose the hand started in, not a
