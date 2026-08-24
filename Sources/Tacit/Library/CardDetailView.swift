@@ -46,7 +46,13 @@ struct CardDetailView: View {
                     GesturePreviewView(
                         entry: entry,
                         mode: .loop,
-                        constellationColor: isPreviewMatched ? TacitColors.accent : .primary
+                        constellationColor: isPreviewMatched ? TacitColors.accent : .primary,
+                        // Finding 3 (M4 fix wave): the Try-It overlay mounts its own copy of this
+                        // same `.loop` preview; without this the hero keeps decoding underneath it
+                        // for the whole session, for no visible benefit (it's fully covered by the
+                        // overlay's `regularMaterial`). Pausing rather than unmounting means
+                        // resuming on dismiss doesn't flash back to the poster.
+                        isSuspended: isTryItActive
                     )
                     .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: isPreviewMatched)
                 }

@@ -54,6 +54,26 @@ enum PreviewAssets {
     }
 }
 
+/// Decoded poster `NSImage`s, cached once per gesture. `posterBody` used to call
+/// `NSImage(contentsOf:)` fresh on every render; since `MappingStore` is one shared
+/// `@ObservedObject` across every card in the grid, a single toggle flip re-renders (and, without
+/// this cache, re-decodes) every visible card's poster PNG synchronously on the main thread.
+/// `@MainActor`-isolated rather than a plain dictionary: decode always happens from a SwiftUI
+/// view body (already main-actor), so no actor-hopping is needed, just single-writer safety.
+@MainActor
+private enum PosterImageCache {
+    private static var images: [GestureID: NSImage] = [:]
+
+    static func image(for gesture: GestureID, url: URL) -> NSImage? {
+        if let cached = images[gesture] {
+            return cached
+        }
+        guard let decoded = NSImage(contentsOf: url) else { return nil }
+        images[gesture] = decoded
+        return decoded
+    }
+}
+
 /// The Library's gesture preview slot: plays the bundled looping cartoon-hand `.mov` when one
 /// exists, falls back to the poster PNG when only that exists, and — the case that matters until
 /// Task 8 ships real assets — falls all the way back to the existing `ConstellationRenderer` look
@@ -69,6 +89,14 @@ struct GesturePreviewView: View {
     /// call site except `CardDetailView`'s hero, which threads through its previewCandidate
     /// accent-lighting so that behavior survives verbatim through the fallback path.
     var constellationColor: Color = .primary
+    /// True while something else needs this preview's video paused without unmounting it — e.g.
+    /// `CardDetailView` pausing its `.loop` hero while the Try-It overlay's own copy of this view
+    /// is open on top of it, so the two aren't both decoding at once, and resuming afterward
+    /// resumes the SAME player mid-frame instead of flashing back to the poster. Has no effect
+    /// unless a video is actually mounted (`.posterOnly`/hover-idle states ignore it). Defaults to
+    /// `false` for every call site that doesn't need this (every one except `CardDetailView`'s
+    /// hero today).
+    var isSuspended: Bool = false
 
     enum Mode {
         /// Always playing, muted, looped — the detail hero.
@@ -83,6 +111,11 @@ struct GesturePreviewView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    /// Reduce-Motion-only: whether the user has explicitly clicked play on a `.loop`-mode preview
+    /// (Ruling 4: "Reduce Motion: poster only, video plays on explicit click"). Ignored entirely
+    /// when Reduce Motion is off, and irrelevant for `.posterOnly`/`.playOnHover`, which never show
+    /// the play affordance.
+    @State private var isManuallyPlaying = false
 
     private var gesture: GestureID { entry.id }
 
@@ -95,6 +128,10 @@ struct GesturePreviewView: View {
             } else {
                 constellationFallback
             }
+
+            if showsManualPlaybackControl {
+                manualPlaybackButton
+            }
         }
         .onHover { hovering in
             isHovered = hovering
@@ -103,11 +140,17 @@ struct GesturePreviewView: View {
 
     /// `.playOnHover` never auto-plays under Reduce Motion (spec: hover-driven motion is exactly
     /// the kind of incidental animation Reduce Motion opts out of) — it behaves as `.posterOnly`
-    /// instead, leaving the detail hero's explicit `.loop` as the only way Reduce Motion users see
-    /// this gesture move, and only after they've deliberately opened the card.
+    /// instead. `.loop` gets the SAME downgrade under Reduce Motion (Ruling 4: "poster only, video
+    /// plays on explicit click") rather than a parallel mechanism — it only escapes back to
+    /// `.loop` once the user has explicitly clicked the play affordance below
+    /// (`isManuallyPlaying`), and reverts to the poster the moment they click again.
     private var effectiveMode: Mode {
-        if mode == .playOnHover, reduceMotion { return .posterOnly }
-        return mode
+        guard reduceMotion else { return mode }
+        switch mode {
+        case .playOnHover: return .posterOnly
+        case .loop: return isManuallyPlaying ? .loop : .posterOnly
+        case .posterOnly: return .posterOnly
+        }
     }
 
     private var isPlaying: Bool {
@@ -118,10 +161,43 @@ struct GesturePreviewView: View {
         }
     }
 
+    /// The click-to-play affordance only ever applies to `.loop`-mode previews (the detail hero
+    /// and Try-It's own preview copy) under Reduce Motion — `.playOnHover` stays poster-only with
+    /// no way to force playback (hover has no "explicit click" equivalent), and plain
+    /// `.posterOnly` contexts never animate regardless of the motion setting. Also gated on an
+    /// actual `.mov` existing for this gesture: with no video asset, `body`'s top-level
+    /// if/else-if falls straight to the poster (or constellation) branch regardless of play
+    /// state, so there'd be nothing for a "Play" tap to start — showing the control anyway would
+    /// be a dead button.
+    private var showsManualPlaybackControl: Bool {
+        mode == .loop && reduceMotion && PreviewAssets.movURL(for: gesture) != nil
+    }
+
+    /// Plain-verb, monochrome, 44pt play/pause toggle (spec §4: plain verbs, 44pt target, no new
+    /// accent use, honors Reduce Motion by construction since it only ever appears while Reduce
+    /// Motion is on). `TacitMotion.respecting` always yields `nil` (instant) here since Reduce
+    /// Motion is a precondition of this button existing at all — spelled out anyway so the token
+    /// stays the single source of truth rather than a bare `nil`/magic literal.
+    private var manualPlaybackButton: some View {
+        Button {
+            isManuallyPlaying.toggle()
+        } label: {
+            Image(systemName: isManuallyPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(.thinMaterial, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .animation(TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback), value: isManuallyPlaying)
+        .accessibilityLabel(isManuallyPlaying ? "Pause" : "Play")
+    }
+
     @ViewBuilder
     private func movBody(_ url: URL) -> some View {
         if isPlaying {
-            LoopingVideoLayer(url: url)
+            LoopingVideoLayer(url: url, isSuspended: isSuspended)
         } else if let posterURL = PreviewAssets.posterURL(for: gesture) {
             posterBody(posterURL)
         } else {
@@ -133,7 +209,7 @@ struct GesturePreviewView: View {
 
     private func posterBody(_ url: URL) -> some View {
         Group {
-            if let image = NSImage(contentsOf: url) {
+            if let image = PosterImageCache.image(for: gesture, url: url) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -159,24 +235,28 @@ struct GesturePreviewView: View {
 /// hovering across a grid of 23 cards never accumulates idle players.
 private struct LoopingVideoLayer: View {
     var url: URL
+    var isSuspended: Bool
 
     var body: some View {
-        LoopingVideoLayerRepresentable(url: url)
+        LoopingVideoLayerRepresentable(url: url, isSuspended: isSuspended)
             .id(url)
     }
 }
 
 private struct LoopingVideoLayerRepresentable: NSViewRepresentable {
     var url: URL
+    var isSuspended: Bool
 
     func makeNSView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
         view.start(url: url)
+        view.setSuspended(isSuspended)
         return view
     }
 
     func updateNSView(_ nsView: PlayerLayerView, context: Context) {
         nsView.start(url: url)
+        nsView.setSuspended(isSuspended)
     }
 
     static func dismantleNSView(_ nsView: PlayerLayerView, coordinator: ()) {
@@ -192,6 +272,7 @@ private final class PlayerLayerView: NSView {
     private var queuePlayer: AVQueuePlayer?
     private let playerLayer = AVPlayerLayer()
     private var currentURL: URL?
+    private var isSuspended = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -220,14 +301,46 @@ private final class PlayerLayerView: NSView {
         looper = AVPlayerLooper(player: player, templateItem: item)
         playerLayer.player = player
         queuePlayer = player
-        player.play()
+        if !isSuspended {
+            player.play()
+        }
     }
 
+    /// Pauses/resumes the SAME player+looper in place — deliberately not `stop()`/`start()`,
+    /// which would tear the looper down and restart the decode from frame zero: the whole point
+    /// (Task M4 fix-wave finding 3) is that the Try-It overlay opening over this hero pauses it
+    /// without a poster flash or a restart on resume.
+    func setSuspended(_ suspended: Bool) {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+        guard let queuePlayer else { return }
+        if suspended {
+            queuePlayer.pause()
+        } else {
+            queuePlayer.play()
+        }
+    }
+
+    /// `disableLooping()` before dropping references: `AVPlayerLooper` installs a boundary-time
+    /// observer on the queue player that captures the looper itself, so simply nilling both
+    /// objects doesn't reliably break that internal retain cycle (Apple's own guidance) — with 23
+    /// hoverable grid cards, "sweep the mouse across the grid" is the primary way this view gets
+    /// used, so every hover in/out is a fresh leak candidate without this.
     func stop() {
+        looper?.disableLooping()
         queuePlayer?.pause()
         playerLayer.player = nil
         looper = nil
         queuePlayer = nil
         currentURL = nil
+    }
+
+    deinit {
+        // Same teardown as `dismantleNSView`'s `stop()`, as a safety net for any path that drops
+        // the last reference to this view without SwiftUI ever calling `dismantleNSView` on it.
+        looper?.disableLooping()
+        queuePlayer?.pause()
+        looper = nil
+        queuePlayer = nil
     }
 }
