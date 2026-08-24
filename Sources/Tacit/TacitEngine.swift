@@ -911,29 +911,63 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// new chord's down, so at most one latched key is ever down). User-initiated, so it shows
     /// "<Gesture> → <key> on/off" (Ruling 4); the forced releases in `releaseLatchIfNeeded()` are
     /// silent.
+    ///
+    /// **Post-review fix (Accessibility gates engage only, never release):** the trust check used
+    /// to run BEFORE `keyLatch.toggle(...)` was even called, so with a chord already latched (real
+    /// key-down already delivered while trust was granted) and Accessibility later revoked, the
+    /// user's second tap of the same gesture — their only in-gesture way to turn it back off — hit
+    /// the guard and returned without ever calling `keyLatch.toggle`, leaving the target app's key
+    /// genuinely stuck down with only the popover's "Release" row as an escape hatch. The fix
+    /// computes the transition FIRST (pure, no side effects beyond `KeyLatch`'s own state), then
+    /// branches: `.released` always posts the up and clears state — no trust check, matching
+    /// `releaseLatchIfNeeded()`'s and `handleHoldEnded(_:)`'s unconditional-release convention.
+    /// `.engaged` posts the down only if trusted; if untrusted, the just-computed engage is undone
+    /// via `keyLatch.release()` (nothing was ever posted, so nothing to undo there) and the error
+    /// shows instead. `.swapped` always posts the old chord's up first (release direction, ungated,
+    /// same as `.released`); the new chord's down posts only if trusted, otherwise the swap is
+    /// downgraded to a plain release — `keyLatch.release()` clears the just-engaged new chord so
+    /// nothing stays latched, and the error shows in place of the "on" HUD.
     private func handleToggleFire(gesture: GestureID, chord: KeyChord) {
-        guard actionEnvironment.isAccessibilityTrusted() else {
-            if isHUDEnabled {
-                hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
-            }
-            return
-        }
-
         // Ruling (Task 4 review): if a hold currently owns this chord, a toggle fire is a no-op —
         // the hold's own `.ended` will post the key-up; engaging the latch here would double-post
-        // the key-down and leave the latch believing it owns a key it doesn't.
+        // the key-down and leave the latch believing it owns a key it doesn't. By the hold/latch
+        // mutual-exclusion invariant (`handleHoldBegan`'s `!keyLatch.isLatched(chord)` guard), a
+        // chord already latched can never equal `activeHoldChord`, so this guard never blocks the
+        // release or swap-release direction of `keyLatch.toggle` below — it only ever preempts a
+        // fresh engage while a hold owns the chord. Release paths never consult this guard.
         guard activeHoldChord != chord else { return }
 
+        let trusted = actionEnvironment.isAccessibilityTrusted()
         let summary: String
         switch keyLatch.toggle(gesture: gesture, chord: chord) {
         case .engaged(let engaged):
+            guard trusted else {
+                _ = keyLatch.release()
+                latchedChord = keyLatch.active?.chord
+                if isHUDEnabled {
+                    hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
+                }
+                return
+            }
             _ = actionEnvironment.postKeyDown(engaged)
             summary = "\(engaged.display) on"
         case .released(let released):
+            // Always post the up — no trust check (this is the fix): the release direction must
+            // never be gated on Accessibility, or a chord latched while trusted could never be
+            // turned back off once trust is revoked.
             _ = actionEnvironment.postKeyUp(released)
             summary = "\(released.display) off"
         case .swapped(let released, let engaged):
+            // Old-chord up always posts first — release direction, ungated, same as `.released`.
             _ = actionEnvironment.postKeyUp(released)
+            guard trusted else {
+                _ = keyLatch.release()
+                latchedChord = keyLatch.active?.chord
+                if isHUDEnabled {
+                    hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
+                }
+                return
+            }
             _ = actionEnvironment.postKeyDown(engaged)
             summary = "\(engaged.display) on"
         }
@@ -961,6 +995,18 @@ final class TacitEngine: ObservableObject, EngineUIState {
     ///    ruling): that guard returns before `keyLatch.toggle(...)` is ever called, so the latch
     ///    never believes it owns a key the hold is actually holding — the hold's own `.ended` is
     ///    what posts that key-up, via `releaseActiveHold()`, not this chokepoint.
+    ///  - NOT how `handleToggleFire` itself releases the latch, in TWO different ways, neither of
+    ///    which goes through this chokepoint:
+    ///    1. **The organic "tap again to turn it off" release** (`.released`/`.swapped`'s release
+    ///       half): posts `postKeyUp` directly and inline, unconditionally — no Accessibility
+    ///       check (post-review fix: release must never be gated on trust, or a chord latched
+    ///       while trusted could never be turned back off once trust is revoked). This path
+    ///       always has a real key-up to post, so it is deliberately NOT silent (Ruling 4) —
+    ///       it shows "<key> off" like any other user-initiated toggle.
+    ///    2. **The untrusted-engage / untrusted-swap-downgrade undo** (`.engaged`/`.swapped`'s
+    ///       engage half, when `isAccessibilityTrusted()` is false): calls `keyLatch.release()`
+    ///       directly to discard the just-computed engage — no `postKeyDown` was ever sent for
+    ///       it, so there is nothing to post an up for either; only the error HUD shows.
     private func releaseLatchIfNeeded() {
         guard let chord = keyLatch.release() else { return }
         latchedChord = nil

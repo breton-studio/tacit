@@ -8,11 +8,50 @@ private func makeTempDirectory() -> URL {
     return dir
 }
 
-/// A private `UserDefaults` suite, unique per call — mirrors `makeTempDirectory()`'s isolation
+/// A `UserDefaults` suite, unique per call, that removes its own persistent domain from
+/// `~/Library/Preferences` when it is deallocated — mirrors `makeTempDirectory()`'s isolation
 /// pattern so the workflow-defaults top-up flag (`MappingStore`'s injectable `userDefaults:`
-/// parameter) never leaks state between tests or into a real `.standard` domain.
+/// parameter) never leaks state between tests or into a real `.standard` domain, AND doesn't
+/// leak the on-disk domain itself.
+///
+/// Hygiene fix: before this, every call created a persistent `TacitMappingStoreTests-flags-<UUID>`
+/// domain that was never removed — ~130 accumulated in `~/Library/Preferences` on the dev
+/// machine (252 by the time this fix landed). `UserDefaults(suiteName:)` alone has no such
+/// cleanup, so this subclasses it instead of returning a plain instance: `deinit` fires exactly
+/// when the last strong reference goes away — a test's local `let flags = …`, and/or whichever
+/// `MappingStore`(s) were constructed with it — which is always "when the test finishes," since
+/// nothing outlives the `@Test` function. Subclassing (rather than a separate side-car wrapper
+/// object a caller would have to keep alive via `defer`) means every existing call site, whether
+/// bound to a local or passed inline as `userDefaults: makeTempUserDefaults()`, gets cleanup for
+/// free with zero changes — the least invasive option, and paired-instance tests that share one
+/// suite across two `MappingStore`s keep working unchanged (the shared `flags` local keeps the
+/// suite alive across both).
+///
+/// `removePersistentDomain(forName:)` alone was verified (empirically, on this machine) to be
+/// insufficient: it clears the domain's values and stops `defaults read`/cfprefsd from serving
+/// it, but leaves an empty, `com.apple.quarantine`-tagged `.plist` file behind in
+/// `~/Library/Preferences` — and `defaults domains` (unlike `defaults read`) enumerates that
+/// directory's files directly, so the empty file still counts. Deleting the backing file
+/// ourselves is what actually makes `defaults domains | grep -c TacitMappingStoreTests` go to 0.
+private final class TempUserDefaultsSuite: UserDefaults {
+    private let suiteName: String
+
+    init(suiteName: String) {
+        self.suiteName = suiteName
+        super.init(suiteName: suiteName)!
+    }
+
+    deinit {
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
+        let plistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences")
+            .appendingPathComponent("\(suiteName).plist")
+        try? FileManager.default.removeItem(at: plistURL)
+    }
+}
+
 private func makeTempUserDefaults() -> UserDefaults {
-    UserDefaults(suiteName: "TacitMappingStoreTests-flags-\(UUID().uuidString)")!
+    TempUserDefaultsSuite(suiteName: "TacitMappingStoreTests-flags-\(UUID().uuidString)")
 }
 
 private let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -356,6 +395,36 @@ private struct V1MappingsFile: Codable {
 
     let store = MappingStore(directory: dir, userDefaults: makeTempUserDefaults())
     #expect(store.bindings == MappingStore.defaultBindings())
+}
+
+/// Post-review fix: a corruption recovery must count as a fresh install for the defaults-revision
+/// chain, NOT as an existing file whose (already rev-3) `defaultBindings()` gets the ENTIRE
+/// revision chain replayed on top of it. Seeds an existing-install signal (the legacy M3 bool
+/// flag, i.e. "this install was previously topped up to revision 2") alongside a garbage
+/// `mappings.json`, so if `load()` incorrectly reported `fileExisted: true` for the corruption
+/// path, `applyDefaultsRevisionsIfNeeded` would walk revisions 2 AND 3 on top of the post-recovery
+/// `defaultBindings()` — today's chain happens to round-trip back to the same values by
+/// coincidence (see `final-review-general.md`), so this test's exact-equality assertion is the
+/// only thing that would catch a REGRESSION of that coincidence, not the bug itself; the bug
+/// itself is structural and is what the `load()`/`applyDefaultsRevisionsIfNeeded` fix addresses.
+@MainActor
+@Test func corruptFileRecoveryCountsAsFreshInstallNotAnExistingFileToTopUp() throws {
+    let dir = makeTempDirectory()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fileURL = dir.appendingPathComponent("mappings.json")
+    try Data("not valid json at all { { {".utf8).write(to: fileURL)
+
+    let flags = makeTempUserDefaults()
+    flags.set(true, forKey: legacyWorkflowDefaultsAppliedKey) // "previously topped up to rev 2"
+
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    #expect(store.bindings == MappingStore.defaultBindings())
+    #expect(flags.integer(forKey: defaultsRevisionKey) == MappingStore.currentDefaultsRevision)
+
+    let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    let corruptFiles = contents.filter { $0.hasPrefix("mappings.json.corrupt-") }
+    #expect(corruptFiles.count == 1)
 }
 
 /// Two successive corrupt-recoveries into the *same* directory must preserve BOTH quarantined

@@ -121,9 +121,20 @@ public final class MappingStore: ObservableObject {
     /// doesn't otherwise understand, is quarantined via `recoverFromCorruption` and defaults take
     /// over — this never throws and never crashes.
     ///
-    /// - Returns: `true` if a `mappings.json` was present (readable or not), `false` on a fresh
-    ///   install. Threaded through to `applyDefaultsRevisionsIfNeeded` so a fresh install — which
-    ///   is already on `defaultBindings()` — can skip the revision walk entirely.
+    /// - Returns: `true` if a `mappings.json` was present AND conveys real bindings history to
+    ///   carry forward (readable v-current, or a v1 file successfully migrated); `false` on a
+    ///   fresh install (no file) OR on the `recoverFromCorruption()` path. Threaded through to
+    ///   `applyDefaultsRevisionsIfNeeded`, which uses it to decide whether to walk the revision
+    ///   chain at all: a fresh install is already on `defaultBindings()`, and so — post-review fix
+    ///   — is a corruption recovery, since `recoverFromCorruption()` resets `bindings` to
+    ///   `Self.defaultBindings()` too (the current, fully-migrated values). Reporting `true` for
+    ///   that branch used to make `applyDefaultsRevisionsIfNeeded` replay the ENTIRE revision
+    ///   chain on top of bindings that were already final — currently harmless only by coincidence
+    ///   (today's two revisions happen to round-trip back to `defaultBindings()`), but not
+    ///   structurally guaranteed for a future revision. Treating a corrupt file as conveying no
+    ///   history — same as a fresh install — makes recovery skip the walk entirely and just stamp
+    ///   `currentDefaultsRevision`, which is correct: a quarantined file's prior state is gone, so
+    ///   there is nothing to top up.
     @discardableResult
     private func load() -> Bool {
         guard let data = try? Data(contentsOf: fileURL) else {
@@ -146,7 +157,7 @@ public final class MappingStore: ObservableObject {
             return true
         }
         recoverFromCorruption()
-        return true
+        return false
     }
 
     /// Migrates a v1 `[String: GestureBinding]` map to v2: keys that no longer name a `GestureID`
@@ -261,8 +272,12 @@ public final class MappingStore: ObservableObject {
 
     /// Walks every revision above `storedDefaultsRevision` in order, rewriting only bindings that
     /// still EXACTLY equal that revision's `old` value, then stamps `currentDefaultsRevision`.
-    /// Runs at the end of `init`, after `load()` has settled `bindings`. A fresh install (no file
-    /// existed) skips the walk entirely — `defaultBindings()` is already current — and just stamps.
+    /// Runs at the end of `init`, after `load()` has settled `bindings`. A fresh install (`load()`
+    /// returned `false` — no file existed) skips the walk entirely and just stamps, since
+    /// `defaultBindings()` is already current; post-review fix — a corrupt-file recovery reports
+    /// `fileExisted: false` for the same reason (`recoverFromCorruption()` also reset `bindings` to
+    /// `defaultBindings()`, and a quarantined file conveys no history worth replaying a revision
+    /// chain on top of).
     private func applyDefaultsRevisionsIfNeeded(fileExisted: Bool) {
         defer { userDefaults.set(Self.currentDefaultsRevision, forKey: Self.defaultsRevisionKey) }
         guard fileExisted else { return }
