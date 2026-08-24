@@ -185,10 +185,23 @@ final class CaptureEngine: NSObject, ObservableObject {
     /// fallback), builds its `AVCaptureDeviceInput` FIRST — before touching `session` at all — so
     /// that a device that fails to open (e.g. already claimed by another process) leaves whatever
     /// input is currently running completely untouched rather than tearing it down for a
-    /// replacement that doesn't work. Only once the new input is known-good does it
-    /// `beginConfiguration()`, remove every existing video input, add the new one, and
-    /// `commitConfiguration()` — then re-applies the same `activeVideoMinFrameDuration` pin
-    /// `configureAndStart()` sets, best-effort, for the new device.
+    /// replacement that doesn't work.
+    ///
+    /// **Rollback on a rejected input (post-review fix):** `session.canAddInput(_:)` can only be
+    /// trusted to answer "would the NEW input work" once the OLD input is no longer attached — a
+    /// session generally allows only one video input at a time, so checking `canAddInput(newInput)`
+    /// *before* removing the old one would almost always report `false` regardless of whether the
+    /// new device is actually fine. That means the check has to happen strictly between "remove
+    /// the old input" and "add the new one" — the exact window where a naive implementation would
+    /// silently leave the session with **zero** video inputs if the new device turns out to be
+    /// rejected for some OTHER reason (e.g. a format/preset mismatch the current
+    /// `sessionPreset` can't satisfy), contradicting the "leave things untouched on failure"
+    /// guarantee this method documents above. The fix: keep a reference to the previous input(s)
+    /// (`session.inputs`, read before removing anything) so that if `canAddInput(newInput)` comes
+    /// back `false` after the removal, this re-adds every previous input and commits — the session
+    /// ends up in EXACTLY the state it started in, not a zero-input one — instead of proceeding.
+    /// `activeVideoMinFrameDuration` is only re-pinned on the success path, since the rollback path
+    /// never touches `device` (the request was rejected; nothing about it should be configured).
     private nonisolated static func performCameraSwitch(session: AVCaptureSession, to uniqueID: String?) {
         guard let device = resolvedDevice(for: uniqueID) else { return }
 
@@ -200,12 +213,24 @@ final class CaptureEngine: NSObject, ObservableObject {
         }
 
         session.beginConfiguration()
-        for input in session.inputs {
+
+        let previousInputs = session.inputs
+        for input in previousInputs {
             session.removeInput(input)
         }
-        if session.canAddInput(newInput) {
-            session.addInput(newInput)
+
+        guard session.canAddInput(newInput) else {
+            // Rollback: put every previous input back exactly as it was, rather than leaving the
+            // session with zero video inputs while `state` still claims `.running`/`.paused` as if
+            // nothing happened.
+            for input in previousInputs where session.canAddInput(input) {
+                session.addInput(input)
+            }
+            session.commitConfiguration()
+            return
         }
+
+        session.addInput(newInput)
         session.commitConfiguration()
 
         do {
@@ -245,16 +270,27 @@ final class CaptureEngine: NSObject, ObservableObject {
             session.sessionPreset = .high
         }
 
+        let input: AVCaptureDeviceInput
         do {
-            let input = try AVCaptureDeviceInput(device: device)
-            if session.canAddInput(input) {
-                session.addInput(input)
-            }
+            input = try AVCaptureDeviceInput(device: device)
         } catch {
             session.commitConfiguration()
             state = .unavailable(reason: "Could not open camera")
             return
         }
+        // Post-review sweep (same class of bug fixed in `performCameraSwitch` above): the old
+        // `if session.canAddInput(input) { session.addInput(input) }` silently proceeded to add
+        // the output, commit, and set `state = .running` even if the input was REJECTED — a
+        // truthful-state violation (no video input attached, yet `state` claims `.running`).
+        // There's no rollback to perform here (this is the session's first-ever configuration;
+        // nothing was attached before), so the fix is simply to treat a rejected input as the
+        // same failure `AVCaptureDeviceInput(device:)` throwing would be.
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            state = .unavailable(reason: "Could not open camera")
+            return
+        }
+        session.addInput(input)
 
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
