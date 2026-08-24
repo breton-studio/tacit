@@ -17,10 +17,11 @@ Produces `build/Tacit.app`, ad-hoc signed, ready to launch or move to `/Applicat
 
 ## Run
 
-Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. On first
-launch Tacit walks through a short onboarding: camera permission, Accessibility permission,
-learning the clutch, and binding one gesture. Tacit lives in the menu bar from then on — click the
-glyph for the master toggle, "Pause for an Hour," launch-at-login, and the gesture library.
+Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. Tacit
+requests camera permission at launch, alongside a short first-run onboarding: Accessibility
+permission, learning the clutch, and a look at the preset gesture bindings you start with. Tacit
+lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
+launch-at-login, and the gesture library.
 
 ## Test
 
@@ -34,7 +35,7 @@ permissions are needed to run the tests.
 
 ## Permissions
 
-- **Camera** — required for any recognition at all; requested during onboarding.
+- **Camera** — required for any recognition at all; requested at launch, alongside onboarding.
 - **Accessibility** — required only for gestures bound to a keystroke action (`CGEvent` posting).
   Gestures bound to launching an app, opening a URL, or running a Shortcut work without it. If
   Accessibility is missing or revoked, Tacit says so in the menu bar and in the Library rather than

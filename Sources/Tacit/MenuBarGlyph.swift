@@ -9,16 +9,17 @@ enum GlyphState: Equatable {
     case paused, watching, armed, fired
 }
 
-/// The observable surface Task 11's `TacitEngine` will conform to. Defined here, ahead of that
-/// engine's existence, so this task's UI (menu bar glyph + popover) can be built and manually
-/// verified against a stand-in (`StubEngine`, below) without waiting on capture/detection/
-/// arbitration wiring.
+/// The observable surface `TacitEngine` (`Sources/Tacit/TacitEngine.swift`) conforms to, keeping
+/// the menu bar glyph and popover UI decoupled from the engine's concrete type.
 @MainActor
 protocol EngineUIState: ObservableObject {
     /// Drives the menu bar glyph and popover header state line.
     var glyphState: GlyphState { get }
     /// Master toggle: "Tacit is watching" vs "Paused".
     var isEnabled: Bool { get set }
+    /// Final-review finding I1: whether the HUD confirmation panel shows on a fire (glyph feedback
+    /// keeps working either way — see `TacitEngine.applyDispatchOutcome`).
+    var isHUDEnabled: Bool { get set }
     /// Low light / permission rows, etc. `nil` means no warning to show.
     var warning: String? { get }
     /// "Pause for an Hour" — pause detection for `duration` seconds, then resume.

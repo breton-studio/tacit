@@ -96,7 +96,17 @@ final class CaptureEngine: NSObject, ObservableObject {
     }
 
     /// Stops frame delivery and reports why, without tearing down the session.
+    ///
+    /// No-ops while `state` is `.unavailable`: that state means there's no running session to stop
+    /// in the first place (camera denied, no device, couldn't open it — `configureAndStart()` bails
+    /// out before ever starting `session`), and overwriting `.unavailable` with `.paused(reason:)`
+    /// would erase the underlying camera warning (`TacitEngine.updateWarning` derives `warning` from
+    /// this state) for as long as the pause lasts — e.g. "Pause for an Hour" or the master toggle
+    /// while camera access is denied would silently swap "Camera access needed" for "Paused" and
+    /// never bring it back. `resume()` below guards symmetrically, only ever transitioning out of
+    /// `.paused`.
     func pause(reason: String) {
+        if case .unavailable = state { return }
         state = .paused(reason: reason)
         if session.isRunning {
             captureQueue.async { [session] in
@@ -105,7 +115,9 @@ final class CaptureEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Resumes a paused session.
+    /// Resumes a paused session. No-ops unless `state` is currently `.paused` — in particular,
+    /// never resumes from `.unavailable` (there's no configured session to start) or from
+    /// `.running` (already running).
     func resume() {
         guard case .paused = state else { return }
         captureQueue.async { [session] in

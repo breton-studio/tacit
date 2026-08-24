@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Combine
 import CoreVideo
@@ -45,6 +46,13 @@ extension CVPixelBuffer: @retroactive @unchecked Sendable {}
 final class TacitEngine: ObservableObject, EngineUIState {
     @Published private(set) var glyphState: GlyphState = .paused
     @Published var isEnabled: Bool
+    /// Final-review finding I1 (spec §4: "users can disable the HUD entirely while keeping glyph
+    /// feedback"): gates only `applyDispatchOutcome`'s `hudController.show`/`showError` calls — the
+    /// glyph pulse (`pulseFired()`, called unconditionally from `apply(_:generation:)` for every
+    /// fired event) is a separate, always-on confirmation and must keep working regardless of this
+    /// setting. Persisted the same way as `isEnabled`: `UserDefaults`-backed, defaulting to `true`,
+    /// written back on every change via the `$isHUDEnabled` sink wired in `init`.
+    @Published var isHUDEnabled: Bool
     @Published private(set) var warning: String?
     /// True whenever `CaptureEngine.state == .unavailable` for ANY reason (permission denied, no
     /// camera present, couldn't open the device, etc.) — Task 20's `OnboardingView` needs this
@@ -103,6 +111,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     let hudController = HUDController()
 
     private static let enabledDefaultsKey = "tacit.enabled"
+    private static let hudEnabledDefaultsKey = "tacit.hudEnabled"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
     /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
@@ -117,6 +126,23 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private var pauseResumeTask: Task<Void, Never>?
     private var accessibilityCheckTask: Task<Void, Never>?
     private var hasStarted = false
+
+    /// True only while the current `capture` pause was raised by `handleScreenPauseSignal` below
+    /// (screen locked or display asleep) — never by the user's own master toggle or "Pause for an
+    /// Hour". Gates `handleScreenResumeSignal`'s auto-resume (spec §3.1/§6: locking the screen must
+    /// pause detection, and unlocking must resume it, but ONLY the pause it itself caused): a screen
+    /// unlock/wake must never override a pause the user asked for on purpose. Set `false` unconditionally
+    /// by `handleEnabledChange` and `pause(for:)` — the two user-initiated pause paths — so a lock
+    /// that happens to overlap with either of those can never sneak an unwanted auto-resume in later.
+    private var isScreenLockPaused = false
+    /// Tokens for the block-based observers registered by `registerForScreenStateNotifications()`,
+    /// paired with the center each was registered on (`DistributedNotificationCenter` is a
+    /// `NotificationCenter` subclass, so both fit this one array) — removed in `deinit`. Declared
+    /// `nonisolated(unsafe)` (matching `CaptureEngine.onFrameStorage`'s rationale) purely so `deinit`
+    /// — which, like every Swift `deinit`, runs nonisolated even on a `@MainActor` class — can read
+    /// it to remove the observers; every other access is from `init`/`registerForScreenStateNotifications()`
+    /// on the main actor, and by the time `deinit` runs nothing else can be touching this instance.
+    private nonisolated(unsafe) var systemStateObserverTokens: [(NotificationCenter, NSObjectProtocol)] = []
 
     /// The two components `warning` is derived from (spec §6): a camera-side message (from
     /// `CaptureState`) and an Accessibility-side message (from the poll wired in `init` below).
@@ -152,6 +178,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
         self.recorder = recorder
         let stored = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool
         self.isEnabled = stored ?? true
+        let storedHUDEnabled = UserDefaults.standard.object(forKey: Self.hudEnabledDefaultsKey) as? Bool
+        self.isHUDEnabled = storedHUDEnabled ?? true
 
         capture.$state
             .sink { [weak self] state in
@@ -163,6 +191,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
             .dropFirst()
             .sink { [weak self] enabled in
                 self?.handleEnabledChange(enabled)
+            }
+            .store(in: &cancellables)
+
+        $isHUDEnabled
+            .dropFirst()
+            .sink { enabled in
+                UserDefaults.standard.set(enabled, forKey: Self.hudEnabledDefaultsKey)
             }
             .store(in: &cancellables)
 
@@ -188,6 +223,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 self?.recomputeAccessibilityWarning()
                 try? await Task.sleep(for: .seconds(5))
             }
+        }
+
+        registerForScreenStateNotifications()
+    }
+
+    deinit {
+        for (center, token) in systemStateObserverTokens {
+            center.removeObserver(token)
         }
     }
 
@@ -244,6 +287,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// this pending resume so the two mechanisms never fight over capture state.
     func pause(for duration: TimeInterval) {
         pauseResumeTask?.cancel()
+        // User-initiated: always wins over a pending screen-lock auto-resume (see
+        // `isScreenLockPaused`'s doc comment).
+        isScreenLockPaused = false
         capture.pause(reason: "Paused")
         pauseResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
@@ -259,12 +305,113 @@ final class TacitEngine: ObservableObject, EngineUIState {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
         pauseResumeTask?.cancel()
         pauseResumeTask = nil
+        // User-initiated: always wins over a pending screen-lock auto-resume (see
+        // `isScreenLockPaused`'s doc comment).
+        isScreenLockPaused = false
         if enabled {
             capture.resume()
         } else {
             capture.pause(reason: "Paused")
         }
         recomputeGlyphState()
+    }
+
+    // MARK: - Screen lock / display sleep (spec §3.1/§6, final review finding I2)
+
+    /// Wires the two independent macOS signals for "the user has stepped away and the screen is no
+    /// longer visible": `DistributedNotificationCenter`'s undocumented-but-long-stable
+    /// `com.apple.screenIsLocked`/`com.apple.screenIsUnlocked` (fast user switching / login window
+    /// lock) and `NSWorkspace`'s `screensDidSleepNotification`/`screensDidWakeNotification` (display
+    /// sleep via Energy Saver, closing a laptop lid with an external display, etc). Both call into
+    /// the same pause/resume pair below because either one alone means "nobody is looking at the
+    /// screen right now" (spec §3.1/§6).
+    ///
+    /// Owner choice: this lives on `TacitEngine`, not `CaptureEngine`, because reconciling this
+    /// signal against the OTHER two things that can pause capture — the master `isEnabled` toggle
+    /// and "Pause for an Hour" — requires `isScreenLockPaused` plus the two call sites above, and
+    /// `TacitEngine` already owns exactly that reconciliation (see `pauseResumeTask` cancellation in
+    /// `handleEnabledChange`/`pause(for:)`). `CaptureEngine` only knows about ONE pause at a time
+    /// (`state`'s reason string), so it has no way to tell "the user asked for this" apart from "the
+    /// screen just locked" — this class is the only place both are visible together.
+    ///
+    /// Threading: `DistributedNotificationCenter` selector/block callbacks fire on whatever thread
+    /// posted the notification — NOT guaranteed to be the main thread (contrast `AVCaptureSession`'s
+    /// notifications, which `CaptureEngine`'s header doc explains ARE documented main-thread-only,
+    /// letting its handlers touch `@MainActor` state directly). These observers are block-based
+    /// (`addObserver(forName:object:queue:using:)` with `queue: nil`, i.e. "caller's thread") and
+    /// therefore hop explicitly via `Task { @MainActor in ... }` before touching any actor-isolated
+    /// state, matching this file's documented `Task { @MainActor in ... }` convention rather than
+    /// the selector-based exception `CaptureEngine` relies on. `NSWorkspace`'s sleep/wake
+    /// notifications are documented main-thread-only in practice, but are hopped the same way here
+    /// for one uniform, always-correct pattern instead of two different threading rules side by side.
+    private func registerForScreenStateNotifications() {
+        let distributed = DistributedNotificationCenter.default()
+        let workspace = NSWorkspace.shared.notificationCenter
+
+        let lockToken = distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenPauseSignal(reason: "Screen locked")
+            }
+        }
+        let unlockToken = distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenResumeSignal()
+            }
+        }
+        let sleepToken = workspace.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenPauseSignal(reason: "Display asleep")
+            }
+        }
+        let wakeToken = workspace.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenResumeSignal()
+            }
+        }
+
+        systemStateObserverTokens = [
+            (distributed, lockToken),
+            (distributed, unlockToken),
+            (workspace, sleepToken),
+            (workspace, wakeToken),
+        ]
+    }
+
+    /// Only pauses (and only marks the pause as system-initiated) while capture is actually
+    /// `.running` — if it's already `.paused` (user disabled it, or mid "Pause for an Hour") or
+    /// `.unavailable` (no camera), there's nothing for this signal to do, and critically
+    /// `isScreenLockPaused` must stay `false` so the matching unlock/wake never resumes a pause it
+    /// didn't cause.
+    private func handleScreenPauseSignal(reason: String) {
+        guard case .running = capture.state else { return }
+        isScreenLockPaused = true
+        capture.pause(reason: reason)
+    }
+
+    /// Resumes only if `isScreenLockPaused` is still set — i.e. nothing user-initiated (master
+    /// toggle, "Pause for an Hour") has happened since the matching lock/sleep signal paused capture.
+    /// `capture.resume()` itself only transitions out of `.paused`, so this is additionally safe
+    /// even if `state` somehow became `.unavailable` in between.
+    private func handleScreenResumeSignal() {
+        guard isScreenLockPaused else { return }
+        isScreenLockPaused = false
+        capture.resume()
     }
 
     private func handleCaptureStateChange(_ state: CaptureState) {
@@ -396,15 +543,22 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // only that one) asks the HUD for the grander `celebratory` draw-on; every subsequent
             // fire uses the standard motion. The flag is set unconditionally the first time
             // through, regardless of what happens to `celebratory` below — a fire can only ever
-            // be "the first" once.
+            // be "the first" once. This bookkeeping runs even with the HUD disabled, so re-enabling
+            // it later doesn't retroactively "un-fire" the celebration.
             let celebratory = !UserDefaults.standard.bool(forKey: Self.firstFireCelebratedKey)
             if celebratory {
                 UserDefaults.standard.set(true, forKey: Self.firstFireCelebratedKey)
             }
+            // Finding I1: `isHUDEnabled` gates confirmation UI only — the glyph pulse that already
+            // ran in `apply(_:generation:)` (`pulseFired()`) is unaffected, matching spec §4's "keep
+            // glyph feedback" while letting the HUD itself be turned off.
+            guard isHUDEnabled else { return }
             hudController.show(gesture: gesture, actionSummary: action.summary, frame: frame, celebratory: celebratory)
         case .needsAccessibility:
+            guard isHUDEnabled else { return }
             hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
         case .failed(let message):
+            guard isHUDEnabled else { return }
             hudController.showError(message)
         }
     }

@@ -428,7 +428,7 @@ private struct FirstBindingStepView: View {
     var body: some View {
         OnboardingStepChrome(title: "Your First Bindings", stepIndex: 3) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Six gestures are ready to use right away.")
+                Text("These gestures are ready to use right away.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .padding(.bottom, 8)

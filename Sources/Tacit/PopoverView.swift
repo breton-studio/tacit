@@ -34,6 +34,7 @@ struct PopoverView<Engine: EngineUIState>: View {
 
             masterToggleRow
             pauseButton
+            hudToggleRow
             launchAtLoginRow
 
             if let warning = engine.warning {
@@ -104,6 +105,15 @@ struct PopoverView<Engine: EngineUIState>: View {
             engine.pause(for: 3600)
         }
         .buttonStyle(TacitButtonStyle())
+    }
+
+    /// Finding I1 (spec §4): lets users disable the HUD confirmation panel while keeping glyph
+    /// feedback — `TacitEngine.applyDispatchOutcome` is what actually honors this.
+    private var hudToggleRow: some View {
+        Toggle(isOn: $engine.isHUDEnabled) {
+            Text("Show confirmations")
+        }
+        .toggleStyle(TacitToggleStyle())
     }
 
     private var launchAtLoginRow: some View {
