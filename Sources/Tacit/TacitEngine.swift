@@ -810,12 +810,30 @@ final class TacitEngine: ObservableObject, EngineUIState {
     }
 
     /// A holdable gesture just began being held. Looks up its CURRENT binding: if it's
-    /// enabled and bound to `.holdKeystroke`, posts the key-down (off-main, mirroring
-    /// `handleFire(_:)`'s own off-main dispatch) and shows the HUD's persistent "holding" chip.
-    /// Any other binding (disabled, unbound, or bound to a different action kind) is a complete
-    /// no-op here — the gesture's normal fire already happened via `handleFire(_:)` in
-    /// `apply(_:generation:timestamp:)`, and `activeHoldChord` staying `nil` is exactly what makes
-    /// `handleHoldEnded(_:)` correctly do nothing when this same hold eventually ends.
+    /// enabled and bound to `.holdKeystroke`, posts the key-down and shows the HUD's persistent
+    /// "holding" chip. Any other binding (disabled, unbound, or bound to a different action kind)
+    /// is a complete no-op here — the gesture's normal fire already happened via `handleFire(_:)`
+    /// in `apply(_:generation:timestamp:)`, and `activeHoldChord` staying `nil` is exactly what
+    /// makes `handleHoldEnded(_:)` correctly do nothing when this same hold eventually ends.
+    ///
+    /// **Post-review fix (structural key ordering):** `postKeyDown` is called SYNCHRONOUSLY, on
+    /// the main actor — deliberately NOT `Task.detached`, unlike `handleFire(_:)`'s dispatch of a
+    /// full `TacitAction`. Those are different operations with different hazards: `handleFire(_:)`
+    /// goes off-main because `ActionDispatcher.dispatch` can call into `.runShortcut`, which
+    /// blocks the calling thread on `Process.waitUntilExit()` for as long as the Shortcut takes to
+    /// run — THAT is what must never risk stalling the main actor. `postKeyDown`/`postKeyUp` here
+    /// are just `CGEvent(...).post(tap:)`, a microseconds-scale, non-blocking OS call with no
+    /// `waitUntilExit`-style hazard — there's no latency reason to detach it, and detaching it was
+    /// actively WRONG: two independent `Task.detached` closures (one spawned here, one from
+    /// `handleHoldEnded`) have NO ordering guarantee relative to each other from Swift's
+    /// perspective, so a rapid hold→release→re-hold sequence — or a release racing
+    /// `handleApplicationWillTerminate`'s own synchronous key-up at quit — could post the up
+    /// before the down had even run: a key stuck down forever, exactly the failure mode this
+    /// feature exists to make impossible. Calling `postKeyDown`/`postKeyUp` directly, synchronously,
+    /// on the main actor makes the ordering STRUCTURAL instead of merely likely: MainActor
+    /// serialization guarantees this call runs to completion before ANY other main-actor code —
+    /// including a later `handleHoldEnded`'s `postKeyUp`, or `handleApplicationWillTerminate`'s —
+    /// gets a turn, so down always happens before up, in every interleaving.
     private func handleHoldBegan(_ event: GestureHoldEvent) {
         let binding = mappingStore.binding(for: event.gesture)
         guard binding.enabled, let action = binding.action, case .holdKeystroke(let chord) = action else {
@@ -830,12 +848,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
 
         activeHoldChord = chord
-        let environment = actionEnvironment
-        // Off-main for the same reason `handleFire(_:)` dispatches off-main: `postKeyDown`
-        // synchronously posts a `CGEvent`, which must never risk stalling the main actor.
-        Task.detached {
-            _ = environment.postKeyDown(chord)
-        }
+        _ = actionEnvironment.postKeyDown(chord)
         if isHUDEnabled {
             // `HUDController.showHold` renders "<Gesture> → holding <label>" — deliberately the
             // bare key label (chord.display, "Fn" for keyCode 63), NOT `action.summary` (which is
@@ -846,26 +859,39 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
     }
 
-    /// A hold just ended (pose lost, or forced via `endActiveHoldIfNeeded()`/
-    /// `handleApplicationWillTerminate()`). Posts the paired key-up ONLY if a matching key-down
-    /// was actually sent (`activeHoldChord != nil`) — see that property's doc comment for why the
-    /// captured chord, not a fresh binding lookup, is what gets released. Always tells the HUD to
-    /// end the hold chip (idempotent/harmless if nothing was showing).
+    /// A hold just ended (pose lost, or forced via `endActiveHoldIfNeeded()`). Posts the paired
+    /// key-up ONLY if a matching key-down was actually sent — see `releaseActiveHold()`. Always
+    /// tells the HUD to end the hold chip (idempotent/harmless if nothing was showing).
+    ///
+    /// Synchronous, on the main actor — see `handleHoldBegan(_:)`'s doc comment for why this is
+    /// safe (a non-blocking `CGEvent` post) and, post-review, why it's required: this must be
+    /// ordered structurally after `handleHoldBegan`'s `postKeyDown`, which only MainActor
+    /// serialization (not two independent detached Tasks racing each other) can guarantee.
     private func handleHoldEnded(_ event: GestureHoldEvent) {
         defer { hudController.endHold() }
-        guard let chord = activeHoldChord else { return }
-        activeHoldChord = nil
-        let environment = actionEnvironment
-        Task.detached {
-            _ = environment.postKeyUp(chord)
-        }
+        guard let chord = releaseActiveHold() else { return }
+        _ = actionEnvironment.postKeyUp(chord)
+    }
+
+    /// Shared by `handleHoldEnded(_:)` and `handleApplicationWillTerminate()` (post-review MINOR
+    /// fix — the two previously duplicated this exact clear-and-return inline). Clears this hold's
+    /// key-release bookkeeping (`isHoldActive`, `activeHoldChord`) and returns the `KeyChord` a
+    /// caller must post a key-up for — `nil` if no key-down was ever actually sent for the hold
+    /// that just ended (not bound to `.holdKeystroke`, Accessibility wasn't trusted, etc., in
+    /// which case there is nothing to release). Only the POSTING mechanism differs between the two
+    /// callers (both now synchronous, post-review-fix — see `handleHoldBegan(_:)`'s doc comment);
+    /// this helper is the bookkeeping they share.
+    private func releaseActiveHold() -> KeyChord? {
+        isHoldActive = false
+        defer { activeHoldChord = nil }
+        return activeHoldChord
     }
 
     /// The single chokepoint every non-pose-based hold-ended path routes through (brief: "a
     /// stuck-down Fn key is the failure mode to make impossible"). Resets `holdTracker`
     /// unconditionally; if a hold was actually active, ends it exactly like an organic pose-loss
-    /// `.ended` would (posts the paired key-up off-main only if a real key-down was sent, and
-    /// dismisses the HUD's hold chip). Safe to call when no hold is active — a no-op.
+    /// `.ended` would (posts the paired key-up, synchronously, only if a real key-down was sent,
+    /// and dismisses the HUD's hold chip). Safe to call when no hold is active — a no-op.
     ///
     /// **Every place this is called, and why (the stuck-key audit):**
     ///  - `apply(_:generation:timestamp:)` — disarm / command-window expiry: any frame where
@@ -874,10 +900,9 @@ final class TacitEngine: ObservableObject, EngineUIState {
     ///    and the `isEnabled` master toggle going off, since all three of those pause capture
     ///    (`pauseIfRunning`/`handleEnabledChange`) and land here as the same state transition; this
     ///    is also the only place that can still act once frames stop arriving entirely.
-    ///  - `handleApplicationWillTerminate` — app quit — calls this too (via the same reset), then
-    ///    additionally posts the key-up SYNCHRONOUSLY rather than through `handleHoldEnded`'s
-    ///    off-main `Task.detached`, since a detached Task has no guarantee of getting a turn to
-    ///    run before the process actually exits. See that method's doc comment.
+    ///  - `handleApplicationWillTerminate` — app quit — calls `releaseActiveHold()` directly
+    ///    rather than through this method (it needs its own `holdTracker.reset()` as the gate for
+    ///    whether to act at all); see that method's doc comment.
     ///  - Pose loss itself (the organic, expected end of a hold) does NOT go through this method —
     ///    it's handled directly by `holdTracker.ingest`'s own missing-frame count inside
     ///    `apply(_:generation:timestamp:)`, which calls `handleHoldEvent(_:)`.
@@ -888,19 +913,17 @@ final class TacitEngine: ObservableObject, EngineUIState {
     }
 
     /// App-quit ended-path (brief: "applicationWillTerminate via NSApplication notification").
-    /// Unlike `endActiveHoldIfNeeded()`'s normal off-main dispatch, this posts the final key-up
-    /// SYNCHRONOUSLY: by the time this notification fires there is no "later" for a freshly
-    /// spawned `Task.detached` to run in before the process calls `exit()`, so a detached task
-    /// here would be a best-effort release with no actual guarantee. This is still best-effort in
-    /// the sense that macOS doesn't guarantee this notification fires at all (e.g. a forced quit/
-    /// SIGKILL skips it entirely) — a real stuck key from that class of exit is a known, documented
-    /// limitation outside this method's control, not something any user-space code can prevent.
+    /// Posts the final key-up SYNCHRONOUSLY (always was, and — post-review — so does every other
+    /// hold-ended path now; see `handleHoldBegan(_:)`'s doc comment for why synchronous, main-actor
+    /// posting is safe and, in fact, required for correct ordering everywhere holds post keys).
+    /// This remains best-effort in ONE specific sense unrelated to that fix: macOS doesn't
+    /// guarantee this notification fires at all (e.g. a forced quit/SIGKILL skips it entirely) — a
+    /// real stuck key from that class of exit is a known, documented limitation outside this
+    /// method's control, not something any user-space code can prevent.
     private func handleApplicationWillTerminate() {
-        isHoldActive = false
         guard holdTracker.reset() != nil else { return }
         defer { hudController.endHold() }
-        guard let chord = activeHoldChord else { return }
-        activeHoldChord = nil
+        guard let chord = releaseActiveHold() else { return }
         _ = actionEnvironment.postKeyUp(chord)
     }
 

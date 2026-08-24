@@ -66,6 +66,38 @@ final class HUDController {
     /// was in flight and superseded it.
     private var currentToken = UUID()
 
+    /// M3 Task 9 fix (HUD panel ownership): a hold's chip and a normal fire's transient chip
+    /// share the SAME one `NSPanel` — without this flag, a normal fire arriving mid-hold would
+    /// `retarget()` onto the transient content and then, after its OWN dwell, `dismiss()` the
+    /// whole panel, ending the hold's HUD while the key is still actually held down; and a hold
+    /// ending while that transient chip happened to be showing would call `endHold()`, which
+    /// (pre-fix) unconditionally dismissed whatever was currently up regardless of whether it was
+    /// actually the hold's own content.
+    ///
+    /// `true` from `presentHold()`'s call until `endHold()` clears it — i.e. for the entire span
+    /// a hold conceptually "owns" the panel, even while a normal fire's transient chip is
+    /// currently retargeted on top of it. Traced interleavings this fixes:
+    ///  - **hold → fire → dwell-return → release:** `presentHold` sets `holdOwnsPanel` +
+    ///    `holdContent`, shows the hold chip (no dwell scheduled). A normal fire's `show()`/
+    ///    `showError()` retargets onto the transient content and schedules its OWN dwell as
+    ///    usual (`present`/`scheduleDismiss`, unchanged). When that dwell elapses,
+    ///    `scheduleDismiss` sees `holdOwnsPanel` still `true` and calls `returnToHoldChip`
+    ///    instead of `dismiss` — the panel reverts to showing the hold chip, still on screen, no
+    ///    new dwell scheduled. `endHold()` (called once the hold actually ends) then dismisses
+    ///    normally, via the standard out motion.
+    ///  - **hold → release-during-transient:** the hold ends WHILE the transient chip from the
+    ///    case above is still mid-dwell (before it times out and returns to the hold chip).
+    ///    `endHold()` sees `holdOwnsPanel == true`, clears it, cancels the transient's
+    ///    still-pending dwell task, and dismisses immediately — whatever is currently showing
+    ///    (here, the transient content) fades out early rather than completing its own dwell.
+    ///    This is a deliberate simplification (kept minimal on purpose): once the hold that was
+    ///    propping the panel open ends, nothing keeps it open past that point.
+    private var holdOwnsPanel = false
+    /// The hold's own content, captured by `presentHold()` and restored by a transient's dwell
+    /// timeout while `holdOwnsPanel` is `true` (see `scheduleDismiss`/`returnToHoldChip`).
+    /// Cleared by `endHold()`.
+    private var holdContent: HUDContent?
+
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
@@ -116,9 +148,16 @@ final class HUDController {
     }
 
     /// Dismisses a hold shown via `showHold(...)`, via the exact same standard out motion
-    /// (`hudOut`) a normal auto-dismiss uses. A no-op if nothing is currently on screen — safe to
-    /// call defensively from an ended-path that isn't sure whether a hold chip is actually up.
+    /// (`hudOut`) a normal auto-dismiss uses. No-op if `holdOwnsPanel` is already `false` (no hold
+    /// currently owns the panel — e.g. this hold's chip was never shown because the HUD was
+    /// disabled, or `endHold()` was already called for it) — safe to call defensively from an
+    /// ended-path that isn't sure whether a hold chip is actually up. See `holdOwnsPanel`'s doc
+    /// comment for the two traced interleavings this guard (and the clear-then-dismiss ordering
+    /// below) exists to handle correctly.
     func endHold() {
+        guard holdOwnsPanel else { return }
+        holdOwnsPanel = false
+        holdContent = nil
         guard isPanelOnScreen else { return }
         dwellTask?.cancel()
         dwellTask = nil
@@ -128,12 +167,17 @@ final class HUDController {
     // MARK: - Presentation
 
     /// Like `present(_:celebratory:)`, but deliberately never calls `scheduleDismiss` — the hold
-    /// chip stays up until `endHold()` says otherwise, not on any fixed dwell timer.
+    /// chip stays up until `endHold()` says otherwise, not on any fixed dwell timer. Claims
+    /// `holdOwnsPanel` (see that property's doc comment) so a normal fire arriving mid-hold knows
+    /// to hand the panel back afterward instead of dismissing it out from under the hold.
     private func presentHold(_ content: HUDContent) {
         ensurePanel()
         dwellTask?.cancel()
         dwellTask = nil
         currentToken = UUID()
+
+        holdOwnsPanel = true
+        holdContent = content
 
         state.content = content
         positionPanel()
@@ -145,6 +189,18 @@ final class HUDController {
             isPanelOnScreen = true
             enterFresh(celebratory: false)
         }
+    }
+
+    /// A transient fire's dwell timer elapsed while a hold was still active underneath it (see
+    /// `holdOwnsPanel`'s "hold → fire → dwell-return → release" trace): rather than dismissing the
+    /// whole panel, revert to showing the hold's own content and leave the panel up. Deliberately
+    /// no new token / no `scheduleDismiss` call here — the hold chip never auto-dismisses; only
+    /// `endHold()` ends it. `currentToken`/`dwellTask` are simply left as the just-expired
+    /// transient fire left them: a stale-but-harmless token nothing is watching until either
+    /// another `present`/`presentHold` call bumps it, or `endHold()` dismisses using it.
+    private func returnToHoldChip(_ content: HUDContent) {
+        state.content = content
+        retarget()
     }
 
     private func present(_ content: HUDContent, celebratory: Bool) {
@@ -217,7 +273,14 @@ final class HUDController {
         dwellTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(TacitMotion.hudDwell))
             guard let self, !Task.isCancelled, self.currentToken == token else { return }
-            self.dismiss(token: token)
+            // See `holdOwnsPanel`'s doc comment: a normal fire's dwell elapsing while a hold is
+            // still active must hand the panel BACK to the hold chip, not dismiss it out from
+            // under a still-held key.
+            if self.holdOwnsPanel, let holdContent = self.holdContent {
+                self.returnToHoldChip(holdContent)
+            } else {
+                self.dismiss(token: token)
+            }
         }
     }
 
