@@ -63,16 +63,24 @@ struct SpecimenCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ConstellationRenderer(
-                frame: entry.cannedFrame,
-                lineWidth: 1.5,
-                color: .primary,
-                fitToJoints: true
-            )
+            // Wrapped in a plain container rather than tagging `GesturePreviewView` itself: the
+            // matched pair lives on the CONTAINER's frame, not on the preview's content. Once real
+            // `.mov` assets land (Task 8), the card and the detail hero are two independent
+            // `AVQueuePlayer`s playing the same source, not one video layer morphing between two
+            // sizes — asking `matchedGeometryEffect` to interpolate a *decoding video layer's*
+            // frame every tick is exactly the kind of thing that misbehaves at the build-reason
+            // level (dropped frames, layout thrashing) where interpolating a plain container's
+            // frame while its content crossfades (via the existing `.opacity(isExpanded ? 0 : 1)`
+            // below / the detail view mounting on top) does not. Until those assets exist this is
+            // behaviorally identical to tagging the constellation directly, since
+            // `GesturePreviewView` falls back to `ConstellationRenderer` either way.
+            ZStack {
+                GesturePreviewView(entry: entry, mode: .playOnHover)
+            }
             // `isSource: true` (the default, spelled out here to document the choice): the grid
             // card is the app's one persisting source of geometry for this id — it never leaves
             // the view tree (see `.opacity(isExpanded ? 0 : 1)` below), so it's always available to
-            // anchor the transition. `CardDetailView`'s matching constellation is the target
+            // anchor the transition. `CardDetailView`'s matching container is the target
             // (`isSource: false`). Without picking a side, two co-existing `isSource: true` views
             // resolve to "last one added wins" per `matchedGeometryEffect`'s own docs — order-
             // dependent, not something to lean on.

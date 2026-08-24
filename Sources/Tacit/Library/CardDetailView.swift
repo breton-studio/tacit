@@ -23,20 +23,29 @@ struct CardDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                ConstellationRenderer(
-                    frame: entry.cannedFrame,
-                    lineWidth: 1.5,
-                    // Task 19: "lights up" while the user is actually performing this card's
-                    // gesture right now, per `engine.previewCandidate` (arbitration-bypassing, only
-                    // non-nil while the preview strip below is mounted). Accent is sanctioned here —
-                    // this constellation lighting up while its gesture is held IS armed/active
-                    // semantics, the one use `TacitColors.accent` exists for.
-                    color: isPreviewMatched ? TacitColors.accent : .primary,
-                    fitToJoints: true
-                )
-                .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: isPreviewMatched)
-                // `isSource: false`: `SpecimenCard`'s constellation is the persisting source for
-                // this id (see its doc comment); this is the target that animates to/from it.
+                // Task 6: the hero always loops its preview (Ruling 4 — "Detail hero loops
+                // always"). Until Task 8's assets exist, `GesturePreviewView` falls back to
+                // exactly the `ConstellationRenderer` this replaced, including the
+                // previewCandidate accent-lighting behavior below, so the fallback path (verified
+                // by NOT bundling assets yet) renders identically to before this type existed.
+                //
+                // Same container-not-content matched-geometry convention as `SpecimenCard`'s
+                // wrapper: the pair is tagged on the `ZStack`, not on `GesturePreviewView`
+                // directly, so a real video layer's frame — not its decode/composite internals —
+                // is what participates in the hero morph.
+                ZStack {
+                    // `constellationColor` preserves the exact previewCandidate accent-lighting
+                    // behavior this replaced (only reachable today via the constellation
+                    // fallback, since no `.mov`/`.png` assets are bundled yet — Task 8).
+                    GesturePreviewView(
+                        entry: entry,
+                        mode: .loop,
+                        constellationColor: isPreviewMatched ? TacitColors.accent : .primary
+                    )
+                    .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: isPreviewMatched)
+                }
+                // `isSource: false`: `SpecimenCard`'s wrapper is the persisting source for this
+                // id (see its doc comment); this is the target that animates to/from it.
                 .tacitMatchedGeometry(
                     id: "\(entry.id.rawValue)-constellation",
                     in: namespace,
