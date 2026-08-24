@@ -7,14 +7,25 @@ import UniformTypeIdentifiers
 
 /// Task 18: the action binder mounted in `CardDetailView`'s "ACTION" region (never for
 /// reserved entries — that whole region stays hidden there; see
-/// `CardDetailView.actionBinderSection`). A segmented picker of `ActionKind` — six segments as
-/// of the 2026-08-24 `.switchApp` addition (see `ActionKind` below) — defaulting to whichever
-/// kind the entry's current binding already uses (keystroke if unbound),
-/// with that kind's binder body underneath.
+/// `CardDetailView.actionBinderSection`). A chooser over `ActionKind` — six cases as of the
+/// 2026-08-24 `.switchApp` addition (see `ActionKind` below) — defaulting to whichever kind the
+/// entry's current binding already uses (keystroke if unbound), with that kind's binder body
+/// underneath.
 ///
-/// Switching segments never touches `store` — it only changes which binder is SHOWN. Nothing is
-/// written until a binder's own capture/Save actually commits, so browsing the other four
-/// segments can never accidentally clear an existing binding (brief requirement 3).
+/// 2026-08-24 Library detail sheet fix: this was a six-segment `Picker(.segmented)`, whose
+/// intrinsic width exceeded the (then-440pt) detail card and clipped the whole body left and
+/// right. Segmented control width grows with the number AND label length of segments — it has no
+/// way to compress once six is too many — so it can't be widened out of trouble the way the card
+/// itself was (520pt still isn't enough room for six comfortable segments at this type size). A
+/// `.menu`-style `Picker` is the macOS-native fix for "more choices than a segmented control can
+/// hold": it's a single 44pt row regardless of case count, the button's title always shows the
+/// current selection (so "which kind is selected" stays obvious — spec §4's quality floor), and
+/// it reads as a compact form row rather than a strip of buttons, which fits the near-monochrome,
+/// quiet chrome the rest of the card uses (spec §4.1).
+///
+/// Switching the chooser never touches `store` — it only changes which binder is SHOWN. Nothing
+/// is written until a binder's own capture/Save actually commits, so browsing the other kinds can
+/// never accidentally clear an existing binding (brief requirement 3).
 struct ActionBinderView: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
@@ -36,13 +47,25 @@ struct ActionBinderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Action type", selection: $selectedKind) {
-                ForEach(ActionKind.allCases) { kind in
-                    Text(kind.label).tag(kind)
+            // Label left, menu right, one 44pt row — `.labelsHidden()` hides the Picker's own
+            // auto-rendered title (VoiceOver still reads it, since the title string is still
+            // set) in favor of this explicit `Text`, which keeps this row's layout identical to
+            // every other labeled row in the card regardless of platform Picker quirks.
+            HStack(spacing: 8) {
+                Text("Type")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Picker("Action type", selection: $selectedKind) {
+                    ForEach(ActionKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(.secondary)
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .frame(minHeight: 44)
 
             currentBindingRow

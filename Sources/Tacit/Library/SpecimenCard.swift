@@ -48,12 +48,12 @@ enum SpecimenCopy {
 struct SpecimenCard: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
-    var namespace: Namespace.ID
     var isExpanded: Bool
     var onTap: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @State private var isPressed = false
 
     @ScaledMetric(relativeTo: .body) private var cardHeight: CGFloat = 332
     @ScaledMetric(relativeTo: .body) private var titleSlotHeight: CGFloat = 38
@@ -63,33 +63,20 @@ struct SpecimenCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Wrapped in a plain container rather than tagging `GesturePreviewView` itself: the
-            // matched pair lives on the CONTAINER's frame, not on the preview's content. Once real
-            // `.mov` assets land (Task 8), the card and the detail hero are two independent
-            // `AVQueuePlayer`s playing the same source, not one video layer morphing between two
-            // sizes — asking `matchedGeometryEffect` to interpolate a *decoding video layer's*
-            // frame every tick is exactly the kind of thing that misbehaves at the build-reason
-            // level (dropped frames, layout thrashing) where interpolating a plain container's
-            // frame while its content crossfades (via the existing `.opacity(isExpanded ? 0 : 1)`
-            // below / the detail view mounting on top) does not. Until those assets exist this is
-            // behaviorally identical to tagging the constellation directly, since
-            // `GesturePreviewView` falls back to `ConstellationRenderer` either way.
+            // Postmortem (2026-08-24, Library detail sheet fix): this container USED to carry a
+            // `matchedGeometryEffect` pairing it with `CardDetailView`'s hero, on the theory that
+            // keeping this card mounted (at opacity 0, never removed from the tree — see
+            // `.opacity(isExpanded ? 0 : 1)` below) would let the detail's copy "travel" from here.
+            // In practice `matchedGeometryEffect`'s non-source view doesn't just borrow the
+            // source's frame as a transition starting point — it keeps adopting the source's frame
+            // continuously for as long as BOTH views coexist in the tree. Because this card never
+            // actually leaves the tree (by design, so hide/show can stay symmetric), the detail's
+            // hero stayed permanently pinned to this small grid frame instead of animating out to
+            // the detail's real size. Per the design-eng lens (prefer reliability over cleverness),
+            // the hero now just crossfades — no geometry pairing with the grid card at all.
             ZStack {
                 GesturePreviewView(entry: entry, mode: .playOnHover)
             }
-            // `isSource: true` (the default, spelled out here to document the choice): the grid
-            // card is the app's one persisting source of geometry for this id — it never leaves
-            // the view tree (see `.opacity(isExpanded ? 0 : 1)` below), so it's always available to
-            // anchor the transition. `CardDetailView`'s matching container is the target
-            // (`isSource: false`). Without picking a side, two co-existing `isSource: true` views
-            // resolve to "last one added wins" per `matchedGeometryEffect`'s own docs — order-
-            // dependent, not something to lean on.
-            .tacitMatchedGeometry(
-                id: "\(entry.id.rawValue)-constellation",
-                in: namespace,
-                enabled: !reduceMotion,
-                isSource: true
-            )
             .frame(height: 88)
             .frame(maxWidth: .infinity)
 
@@ -121,10 +108,23 @@ struct SpecimenCard: View {
                 .strokeBorder(Color.primary.opacity(isHovered ? 0.35 : 0.12), lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        // Press feedback for the tap that opens the detail sheet (spec §4.5's `pressFeedback`
+        // token, the standard 0.97 scale every pressable in the app answers with) — distinct
+        // from `isHovered`'s hairline-only brightening above, which stays scale-free by the
+        // frequency gate (browsing the grid is frequent; a `.simultaneousGesture` here doesn't
+        // compete with that hover state or with `onTapGesture`/nested controls below, it only
+        // answers "something in this card was just pressed").
+        .scaleEffect(isPressed ? 0.97 : 1)
+        .animation(TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback), value: isPressed)
+        // Symmetric hide/show: this card and `CardDetailView` never cross-fade against each
+        // other directly (see the hero postmortem above — the two used to be paired via
+        // `matchedGeometryEffect`, which is why the card had to stay mounted-but-invisible rather
+        // than actually leave the tree). It still stays mounted at opacity 0 rather than being
+        // removed, so `AppearingCard`'s first-appearance stagger state and this card's own
+        // `isHovered`/focus state survive the detail sheet opening and closing — but the pairing
+        // that opacity's `isExpanded` toggle serves now is just "one visible copy at a time",
+        // not a geometry anchor.
         .opacity(isExpanded ? 0 : 1)
-        // Same persisting-source convention as the constellation above: the grid card is always
-        // the source, `CardDetailView`'s container is always the target (`isSource: false`).
-        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: true)
         .accessibilityHidden(isExpanded)
         .onHover { hovering in
             withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.pressFeedback)) {
@@ -132,6 +132,11 @@ struct SpecimenCard: View {
             }
         }
         .onTapGesture(perform: onTap)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in isPressed = true }
+                .onEnded { _ in isPressed = false }
+        )
         // Keyboard accessibility floor (spec §4.6): the card itself — not just its enable toggle —
         // must be reachable by Tab and activatable without a mouse. `.focusable()` gives it a
         // system focus ring; Return/Space open detail the same way a click does. The nested toggle
@@ -151,9 +156,8 @@ struct SpecimenCard: View {
         // modifiers applied BEFORE it in the chain, so putting it earlier left the tap gesture
         // reachable in principle (only the detail overlay's z-order was saving it). As the
         // outermost modifier, it's a self-contained guard — the card stays mounted at opacity 0
-        // (to keep anchoring the matched-geometry source above) but is genuinely untappable,
-        // unhoverable, and unfocusable while its detail is open, independent of what else is
-        // drawn on top of it.
+        // but is genuinely untappable, unhoverable, and unfocusable while its detail is open,
+        // independent of what else is drawn on top of it.
         .allowsHitTesting(!isExpanded)
     }
 

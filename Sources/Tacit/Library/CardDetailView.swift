@@ -4,8 +4,16 @@ import TacitCore
 /// The specimen card, grown (spec §5's "Card detail... expands from the card, context preserved,
 /// no navigation push"). Shares `SpecimenCard`'s chrome and copy helpers so the same object reads
 /// as itself at a larger size, not a different screen: same corner radius, same material fill,
-/// same constellation (traveling via `matchedGeometryEffect`, larger), same metadata/binding
-/// copy — plus the editorial paragraph, the action binder, and the perform-to-preview mount point.
+/// same constellation (crossfaded, larger — see the hero postmortem in `SpecimenCard`'s body for
+/// why this is no longer a `matchedGeometryEffect` morph), same metadata/binding copy — plus the
+/// editorial paragraph, the action binder, and the perform-to-preview mount point.
+///
+/// 2026-08-24 Library detail sheet fix: this view is centered by its caller
+/// (`LibraryWindow.detailOverlay`) rather than by traveling from the grid card's position, and
+/// enters/exits with a plain scale+fade (`TacitMotion.standardUI` in, `hudOut` out — exits faster
+/// than entrances per spec §4). See `LibraryWindow.swift` for why: a persistent `matchedGeometryEffect`
+/// pairing with the always-mounted grid card pinned this view to the small card's frame instead of
+/// animating out to its own size — "prefer reliability over cleverness" per the design-eng lens.
 struct CardDetailView: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
@@ -13,8 +21,12 @@ struct CardDetailView: View {
     // re-render on `engine.previewCandidate` (lights the constellation below) and `engine.glyphState`
     // (the strip's paused affordance) changes.
     @ObservedObject var engine: TacitEngine
-    var namespace: Namespace.ID
     var onDone: () -> Void
+    /// The tallest this card is allowed to get — `LibraryWindow.detailOverlay` passes
+    /// `window height − 96` so the card never collides with the window's edges regardless of how
+    /// tall the window is resized to; content beyond this scrolls (the outer `ScrollView` below).
+    /// Defaults to a sane value for previews/tests that don't go through that overlay.
+    var maxHeight: CGFloat = 560
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -25,6 +37,7 @@ struct CardDetailView: View {
     @State private var isTryItActive = false
 
     private static let cornerRadius: CGFloat = 20
+    private static let width: CGFloat = 520
 
     var body: some View {
         ScrollView {
@@ -35,10 +48,6 @@ struct CardDetailView: View {
                 // previewCandidate accent-lighting behavior below, so the fallback path (verified
                 // by NOT bundling assets yet) renders identically to before this type existed.
                 //
-                // Same container-not-content matched-geometry convention as `SpecimenCard`'s
-                // wrapper: the pair is tagged on the `ZStack`, not on `GesturePreviewView`
-                // directly, so a real video layer's frame — not its decode/composite internals —
-                // is what participates in the hero morph.
                 ZStack {
                     // `constellationColor` preserves the exact previewCandidate accent-lighting
                     // behavior this replaced (only reachable today via the constellation
@@ -56,14 +65,6 @@ struct CardDetailView: View {
                     )
                     .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: isPreviewMatched)
                 }
-                // `isSource: false`: `SpecimenCard`'s wrapper is the persisting source for this
-                // id (see its doc comment); this is the target that animates to/from it.
-                .tacitMatchedGeometry(
-                    id: "\(entry.id.rawValue)-constellation",
-                    in: namespace,
-                    enabled: !reduceMotion,
-                    isSource: false
-                )
                 .frame(height: 160)
                 .frame(maxWidth: .infinity)
 
@@ -97,8 +98,8 @@ struct CardDetailView: View {
             }
             .padding(20)
         }
-        .frame(maxWidth: 440)
-        .frame(minHeight: 320, maxHeight: 560)
+        .frame(width: Self.width)
+        .frame(minHeight: 320, maxHeight: maxHeight)
         .background(
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                 .fill(.regularMaterial)
@@ -119,9 +120,6 @@ struct CardDetailView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        // `isSource: false` — see `SpecimenCard`'s matching comment: the grid card is the app's
-        // one persisting source of geometry for this id; this container is always the target.
-        .tacitMatchedGeometry(id: entry.id.rawValue, in: namespace, enabled: !reduceMotion, isSource: false)
         .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
     }
 

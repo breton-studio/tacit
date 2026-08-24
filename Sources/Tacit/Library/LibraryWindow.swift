@@ -2,15 +2,14 @@ import SwiftUI
 import TacitCore
 
 /// The Library window — the "gesture specimen book" (spec §5). Three tiers, each a section of
-/// `SpecimenCard`s in an adaptive grid; clicking a card expands it in place into
-/// `CardDetailView` via one shared `@Namespace`, so the card — and specifically its constellation
-/// — visibly travels rather than remounting somewhere else (object permanence).
+/// `SpecimenCard`s in an adaptive grid; clicking a card opens `CardDetailView` centered over the
+/// grid on a `.thinMaterial` scrim, scaling/fading in — see `detailOverlay` below for why this is
+/// a plain centered transition rather than the card traveling from its grid position.
 struct LibraryWindow: View {
     @ObservedObject var store: MappingStore
     @ObservedObject var engine: TacitEngine
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var cardNamespace
 
     @State private var expandedGesture: GestureID?
     /// Cards that have already played their first-appearance stagger once. Owned here (not by
@@ -41,11 +40,11 @@ struct LibraryWindow: View {
     /// The `.frame(minWidth:minHeight:)` that used to sit directly on the specimen-grid
     /// `ScrollView` moved up to the `TabView` itself, since it now has to size BOTH tabs, not just
     /// the grid; `gesturesTab` keeps its own `.background`/`.overlay`/`.onExitCommand` exactly as
-    /// before. Everything the stagger/expand behavior depends on — `cardNamespace`,
-    /// `expandedGesture`, `appearedIDs` — is unchanged `@State`/`@Namespace` on this same
-    /// `LibraryWindow`, so it survives this re-parenting: those are owned by the view that hosts
-    /// the `TabView`, not by a tab's content, and SwiftUI preserves a parent's `@State` across its
-    /// children being shown/hidden by tab selection.
+    /// before. Everything the stagger/expand behavior depends on — `expandedGesture`,
+    /// `appearedIDs` — is unchanged `@State` on this same `LibraryWindow`, so it survives this
+    /// re-parenting: those are owned by the view that hosts the `TabView`, not by a tab's content,
+    /// and SwiftUI preserves a parent's `@State` across its children being shown/hidden by tab
+    /// selection.
     var body: some View {
         TabView {
             gesturesTab
@@ -59,32 +58,39 @@ struct LibraryWindow: View {
 
     // MARK: - Gestures tab (unchanged content, just re-parented under the TabView above)
 
+    /// A `ZStack`, not `ScrollView`'s own `.overlay`: `detailOverlay` needs to measure and fill
+    /// the FULL tab content area (via its own `GeometryReader`, see below) to center reliably and
+    /// to compute a height cap from the actual window size, and a `ZStack` sibling gives it that
+    /// without being constrained by the `ScrollView`'s scrollable-content geometry.
     private var gesturesTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 32) {
-                ForEach(Self.tierOrder, id: \.self) { tier in
-                    section(for: tier)
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    ForEach(Self.tierOrder, id: \.self) { tier in
+                        section(for: tier)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Measures the grid's available width (post-padding) so `cardGrid(entries:)` can
+                // chunk cards into fixed-width rows eagerly instead of relying on `LazyVGrid`'s
+                // adaptive columns — see the crash postmortem there. A passive `.background`
+                // reader (rather than making `GeometryReader` the container) so it never fights
+                // this `VStack` for its own size.
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { contentWidth = proxy.size.width }
+                            .onChange(of: proxy.size.width) { _, newWidth in
+                                contentWidth = newWidth
+                            }
+                    }
                 }
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // Measures the grid's available width (post-padding) so `cardGrid(entries:)` can
-            // chunk cards into fixed-width rows eagerly instead of relying on `LazyVGrid`'s
-            // adaptive columns — see the crash postmortem there. A passive `.background` reader
-            // (rather than making `GeometryReader` the container) so it never fights this
-            // `VStack` for its own size.
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { contentWidth = proxy.size.width }
-                        .onChange(of: proxy.size.width) { _, newWidth in
-                            contentWidth = newWidth
-                        }
-                }
-            }
+            .background(.background)
+
+            detailOverlay
         }
-        .background(.background)
-        .overlay { detailOverlay }
         .onExitCommand {
             if expandedGesture != nil { collapse() }
         }
@@ -133,7 +139,6 @@ struct LibraryWindow: View {
                             SpecimenCard(
                                 entry: entry,
                                 store: store,
-                                namespace: cardNamespace,
                                 isExpanded: expandedGesture == entry.id,
                                 onTap: { expand(entry.id) }
                             )
@@ -190,26 +195,41 @@ struct LibraryWindow: View {
 
     // MARK: - Detail overlay
 
+    /// 2026-08-24 Library detail sheet fix: the card no longer travels from its grid position
+    /// (see `SpecimenCard`'s hero postmortem) — it scales/fades in already centered, which this
+    /// `GeometryReader` makes reliable regardless of window size: it measures the FULL tab
+    /// content area (this view is a `ZStack` sibling of the grid's `ScrollView`, not something
+    /// nested inside its scrollable content, so scrolling never moves it), sizes itself to
+    /// exactly that area so the inner `ZStack`'s default `.center` alignment centers the card in
+    /// the window rather than in whatever incidental space the modifier chain left over, and hands
+    /// `CardDetailView` a height ceiling (window height − 96pt margin) so it — not this overlay —
+    /// decides when to start scrolling its own content instead of ever exceeding the window.
     @ViewBuilder
     private var detailOverlay: some View {
         if let expandedGesture {
             let entry = GestureCatalog.entry(for: expandedGesture)
-            ZStack {
-                // The scrim: the grid dims slightly behind the expanded card, via material — never
-                // an opaque black slab (spec §4.4).
-                Rectangle()
-                    .fill(.thinMaterial)
-                    .ignoresSafeArea()
-                    .onTapGesture { collapse() }
+            GeometryReader { proxy in
+                ZStack {
+                    // The scrim: the grid dims slightly behind the expanded card, via material —
+                    // never an opaque black slab (spec §4.4).
+                    Rectangle()
+                        .fill(.thinMaterial)
+                        .onTapGesture { collapse() }
 
-                CardDetailView(
-                    entry: entry,
-                    store: store,
-                    engine: engine,
-                    namespace: cardNamespace,
-                    onDone: collapse
-                )
-                .padding(32)
+                    CardDetailView(
+                        entry: entry,
+                        store: store,
+                        engine: engine,
+                        onDone: collapse,
+                        maxHeight: max(320, proxy.size.height - 96)
+                    )
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.94, anchor: .center).combined(with: .opacity)
+                    )
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
             .transition(.opacity)
         }
@@ -218,13 +238,13 @@ struct LibraryWindow: View {
     // MARK: - Expand / collapse
 
     private func expand(_ id: GestureID) {
-        withAnimation(TacitMotion.standardUI) {
+        withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI)) {
             expandedGesture = id
         }
     }
 
     private func collapse() {
-        withAnimation(TacitMotion.standardUI) {
+        withAnimation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI)) {
             expandedGesture = nil
         }
     }
