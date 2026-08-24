@@ -1,4 +1,3 @@
-import ServiceManagement
 import SwiftUI
 import TacitCore
 
@@ -11,9 +10,6 @@ struct PopoverView<Engine: EngineUIState>: View {
 
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
-    @State private var launchAtLoginErrorMessage: String?
 
     @State private var isOptionKeyDown = false
     @State private var fixtureLabel = ""
@@ -34,7 +30,7 @@ struct PopoverView<Engine: EngineUIState>: View {
             hairline
 
             hudToggleRow
-            launchAtLoginRow
+            LaunchAtLoginToggleRow()
 
             if let warning = engine.warning {
                 hairline
@@ -116,23 +112,6 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
         .toggleStyle(TacitToggleStyle())
         .padding(.horizontal, 10)
-    }
-
-    private var launchAtLoginRow: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Toggle(isOn: launchAtLoginBinding) {
-                Text("Launch at Login")
-                    .font(.body)
-            }
-            .toggleStyle(TacitToggleStyle())
-            .padding(.horizontal, 10)
-
-            if let launchAtLoginErrorMessage {
-                Text(launchAtLoginErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private func warningRow(_ warning: String) -> some View {
@@ -241,30 +220,4 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
     }
     #endif
-
-    // MARK: - Launch at Login
-
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { launchAtLoginEnabled },
-            set: { setLaunchAtLogin($0) }
-        )
-    }
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            launchAtLoginErrorMessage = nil
-        } catch {
-            // Revert the toggle and show a one-line message, per brief.
-            launchAtLoginErrorMessage = "Couldn't update Login Items."
-        }
-        // Reflect the system's actual status either way — `register()`/`unregister()` can
-        // silently no-op (e.g. already in the requested state) as well as throw.
-        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
-    }
 }

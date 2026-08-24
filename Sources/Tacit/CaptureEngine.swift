@@ -149,6 +149,87 @@ final class CaptureEngine: NSObject, ObservableObject {
         state = .running
     }
 
+    // MARK: - Camera selection (M3 Task 7: Settings tab camera picker)
+
+    /// Switches the active camera input to the device with `uniqueID`, falling back to the
+    /// default built-in wide-angle camera when `uniqueID` is `nil` or no longer resolves to an
+    /// available device (e.g. a persisted external/Continuity camera was unplugged since the
+    /// selection was made). Persistence of the selection itself (`"tacit.cameraID"`) is the
+    /// caller's job — `TacitEngine.cameraID`'s `didSet` — this method only performs the live
+    /// session reconfiguration.
+    ///
+    /// No-op while `state` is `.unavailable`: exactly like `pause(reason:)`/`resume()` above,
+    /// `.unavailable` means `configureAndStart()` never got a session running in the first place
+    /// (permission denied, no camera present, couldn't open the device) — there is no input to
+    /// swap, and attempting to reconfigure anyway would risk resurrecting a session nobody asked
+    /// to run behind a state that's supposed to keep reporting the same unavailability reason.
+    /// `state` itself is left completely untouched by this method either way: switching cameras
+    /// never changes whether the pipeline is running, paused, or unavailable, only which physical
+    /// device feeds it while running/paused.
+    ///
+    /// The actual `AVCaptureSession` mutation runs on `captureQueue` (not the main actor) per
+    /// Apple's guidance for reconfiguring a session that may currently be running — mirrored from
+    /// `pause(reason:)`/`resume()`'s existing `captureQueue.async { [session] in ... }` convention
+    /// in this file, just extended to cover `beginConfiguration()`/`commitConfiguration()` and the
+    /// device lock too (unlike `configureAndStart()`, which — being the one-time initial setup,
+    /// with nothing yet running to protect — does that work synchronously on the main actor
+    /// instead).
+    func switchCamera(to uniqueID: String?) {
+        if case .unavailable = state { return }
+        captureQueue.async { [session] in
+            Self.performCameraSwitch(session: session, to: uniqueID)
+        }
+    }
+
+    /// Off-main-actor camera-input swap: resolves the requested device (or its default-camera
+    /// fallback), builds its `AVCaptureDeviceInput` FIRST — before touching `session` at all — so
+    /// that a device that fails to open (e.g. already claimed by another process) leaves whatever
+    /// input is currently running completely untouched rather than tearing it down for a
+    /// replacement that doesn't work. Only once the new input is known-good does it
+    /// `beginConfiguration()`, remove every existing video input, add the new one, and
+    /// `commitConfiguration()` — then re-applies the same `activeVideoMinFrameDuration` pin
+    /// `configureAndStart()` sets, best-effort, for the new device.
+    private nonisolated static func performCameraSwitch(session: AVCaptureSession, to uniqueID: String?) {
+        guard let device = resolvedDevice(for: uniqueID) else { return }
+
+        let newInput: AVCaptureDeviceInput
+        do {
+            newInput = try AVCaptureDeviceInput(device: device)
+        } catch {
+            return
+        }
+
+        session.beginConfiguration()
+        for input in session.inputs {
+            session.removeInput(input)
+        }
+        if session.canAddInput(newInput) {
+            session.addInput(newInput)
+        }
+        session.commitConfiguration()
+
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+            device.unlockForConfiguration()
+        } catch {
+            // Best-effort, matching `configureAndStart()`: proceed without pinning the frame
+            // duration rather than failing the whole switch over a lock failure.
+        }
+    }
+
+    /// `uniqueID`'s device if it still resolves to one, else the default built-in wide-angle
+    /// camera (the same device `configureAndStart()` opens on first launch) — the "graceful
+    /// fallback" required by the M3 Task 7 brief. Returns `nil` only if NEITHER resolves (e.g. no
+    /// camera hardware at all), in which case `performCameraSwitch` leaves the existing input
+    /// alone rather than tearing it down for nothing.
+    private nonisolated static func resolvedDevice(for uniqueID: String?) -> AVCaptureDevice? {
+        if let uniqueID, let device = AVCaptureDevice(uniqueID: uniqueID) {
+            return device
+        }
+        return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .unspecified)
+    }
+
     // MARK: - Configuration
 
     private func configureAndStart() {

@@ -53,6 +53,37 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// setting. Persisted the same way as `isEnabled`: `UserDefaults`-backed, defaulting to `true`,
     /// written back on every change via the `$isHUDEnabled` sink wired in `init`.
     @Published var isHUDEnabled: Bool
+    /// M3 Task 7 (Settings tab sensitivity segmented control): the Settings tab's global
+    /// arbitration sensitivity trim, `UserDefaults`-backed under `"tacit.sensitivity"`, defaulting
+    /// to `.standard`. Every change swaps `PipelineCore`'s live tuning via the SAME actor path
+    /// low light already uses — see `PipelineCore.setSensitivity(_:)`/`recomputeTuning()` — so a
+    /// sensitivity change and a low-light flip always compose (sensitivity first, low light on
+    /// top) rather than one silently clobbering the other.
+    @Published var sensitivity: SensitivityTrim {
+        didSet {
+            guard sensitivity != oldValue else { return }
+            UserDefaults.standard.set(sensitivity.rawValue, forKey: Self.sensitivityDefaultsKey)
+            Task { [pipeline, sensitivity] in
+                await pipeline?.setSensitivity(sensitivity)
+            }
+        }
+    }
+    /// M3 Task 7 (Settings tab camera picker): the selected camera's `AVCaptureDevice.uniqueID`,
+    /// `UserDefaults`-backed under `"tacit.cameraID"`; `nil` means "use the default built-in
+    /// wide-angle camera" (also `CaptureEngine.configureAndStart()`'s own hardcoded choice, so a
+    /// nil selection needs no explicit switch at all — see `start()`'s startup-apply comment for
+    /// why only a NON-nil persisted selection triggers one there). Every change here calls
+    /// `CaptureEngine.switchCamera(to:)`, which itself no-ops while capture is `.unavailable` and
+    /// falls back to the default device if the requested one no longer resolves (e.g. an external
+    /// camera was unplugged) — this property is intentionally never validated against the live
+    /// device list itself; that's `CaptureEngine`'s job, so this stays a dumb, persisted string.
+    @Published var cameraID: String? {
+        didSet {
+            guard cameraID != oldValue else { return }
+            UserDefaults.standard.set(cameraID, forKey: Self.cameraIDDefaultsKey)
+            capture.switchCamera(to: cameraID)
+        }
+    }
     @Published private(set) var warning: String?
     /// True whenever `CaptureEngine.state == .unavailable` for ANY reason (permission denied, no
     /// camera present, couldn't open the device, etc.) — Task 20's `OnboardingView` needs this
@@ -112,6 +143,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     private static let enabledDefaultsKey = "tacit.enabled"
     private static let hudEnabledDefaultsKey = "tacit.hudEnabled"
+    private static let sensitivityDefaultsKey = "tacit.sensitivity"
+    private static let cameraIDDefaultsKey = "tacit.cameraID"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
     /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
@@ -227,6 +260,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
         self.isEnabled = stored ?? true
         let storedHUDEnabled = UserDefaults.standard.object(forKey: Self.hudEnabledDefaultsKey) as? Bool
         self.isHUDEnabled = storedHUDEnabled ?? true
+        let storedSensitivity = UserDefaults.standard.string(forKey: Self.sensitivityDefaultsKey)
+            .flatMap(SensitivityTrim.init(rawValue:))
+        self.sensitivity = storedSensitivity ?? .standard
+        self.cameraID = UserDefaults.standard.string(forKey: Self.cameraIDDefaultsKey)
 
         capture.$state
             .sink { [weak self] state in
@@ -303,6 +340,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
         let pipeline = PipelineCore()
         self.pipeline = pipeline
 
+        // M3 Task 7: a freshly-constructed `PipelineCore` always starts at `.standard` (see its
+        // `currentSensitivity` default) regardless of what the user previously persisted under
+        // `"tacit.sensitivity"` — apply that persisted trim once, here, so a restart doesn't
+        // silently revert a saved "Relaxed"/"Eager" preference back to standard until the user
+        // re-visits Settings. Harmless (a same-value recompute) when the persisted value is
+        // already `.standard`.
+        Task { [pipeline, sensitivity] in
+            await pipeline.setSensitivity(sensitivity)
+        }
+
         capture.onFrame = { pixelBuffer, timestamp in
             continuation.yield((pixelBuffer, timestamp))
         }
@@ -334,6 +381,15 @@ final class TacitEngine: ObservableObject, EngineUIState {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.capture.start()
+            // M3 Task 7: apply a persisted non-default camera selection once the session exists.
+            // `configureAndStart()` always opens the default built-in wide-angle camera itself, so
+            // a `nil` `cameraID` (never customized, or explicitly reset to default) needs no call
+            // here at all — only a persisted, non-nil selection has to be switched to.
+            // `CaptureEngine.switchCamera(to:)` itself no-ops if `capture.start()` left `state` at
+            // `.unavailable` (no camera/permission denied), keeping that state truthful.
+            if let cameraID = self.cameraID {
+                self.capture.switchCamera(to: cameraID)
+            }
             if !self.isEnabled {
                 self.capture.pause(reason: "Paused")
             }
@@ -771,12 +827,22 @@ private actor PipelineCore {
     private let classifier = StaticPoseClassifier()
     private let arbitration = ArbitrationEngine()
     /// M3 Task 6: the un-adjusted tuning `arbitration` was constructed with — kept here (not just
-    /// inline in `ArbitrationEngine()`'s default) so `setLowLight(_:)` below always has the true
+    /// inline in `ArbitrationEngine()`'s default) so `recomputeTuning()` below always has the true
     /// baseline to adjust FROM, regardless of how many times low light has flipped on/off since.
     /// Without this, feeding an already-adjusted tuning back into `LowLightPolicy.adjusted` on a
     /// second "low light" flip would double-raise `enterConfidence`/`stayConfidence` instead of
     /// idempotently reaching the same adjusted values every time.
     private let baseArbitrationTuning = ArbitrationTuning()
+    /// M3 Task 7: the Settings tab's persisted sensitivity trim, defaulting to `.standard` (the
+    /// untouched baseline) until `setSensitivity(_:)` below is told otherwise. Kept here (not just
+    /// applied once and discarded) for the same reason `baseArbitrationTuning` is kept — see
+    /// `recomputeTuning()`'s doc comment for why BOTH this and the low-light flag have to survive
+    /// independently between recomputes.
+    private var currentSensitivity: SensitivityTrim = .standard
+    /// M3 Task 7: mirrors the most recent `setLowLight(_:)` argument so `recomputeTuning()` can
+    /// re-derive the fully composed tuning from `baseArbitrationTuning` on EITHER a sensitivity
+    /// change or a low-light flip, without needing the caller to re-supply the other half.
+    private var isLowLight = false
 
     /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
     /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
@@ -942,24 +1008,50 @@ private actor PipelineCore {
     }
 
     /// M3 Task 6: called by `TacitEngine` on every low-light hysteresis FLIP (not on every luma
-    /// sample — see `TacitEngine.handleLuma(_:at:)`) to swap `arbitration`'s tuning between
-    /// `baseArbitrationTuning` and its `LowLightPolicy.adjusted` counterpart.
+    /// sample — see `TacitEngine.handleLuma(_:at:)`) to swap `arbitration`'s tuning to account for
+    /// the new low-light state, composed on top of whatever sensitivity trim is currently active.
     ///
     /// This is an actor-isolated method specifically so the swap can never race a concurrently
     /// in-flight `process(pixelBuffer:timestamp:)` call: `process` suspends at `await
     /// detector.detect(...)`, and PipelineCore being an `actor` means that suspension is the only
-    /// point another call into this actor — including this one — can run; `setTuning` itself has
-    /// no suspension point, so once it starts running it completes atomically before the next
-    /// queued call (whether that's the rest of a paused `process`, or another `setLowLight`) gets
-    /// a turn. `ArbitrationEngine.setTuning` swaps only the tuning field in place — `state`, the
-    /// arming clock, the in-progress debounce, and every gesture's cooldown ledger are untouched
-    /// — so a flip never disarms the user's clutch or clears a cooldown that was already ticking.
+    /// point another call into this actor — including this one — can run; `recomputeTuning()`
+    /// itself has no suspension point, so once it starts running it completes atomically before
+    /// the next queued call (whether that's the rest of a paused `process`, or another
+    /// `setLowLight`/`setSensitivity`) gets a turn. `ArbitrationEngine.setTuning` swaps only the
+    /// tuning field in place — `state`, the arming clock, the in-progress debounce, and every
+    /// gesture's cooldown ledger are untouched — so a flip never disarms the user's clutch or
+    /// clears a cooldown that was already ticking.
     ///
-    /// Idempotent: always recomputes `LowLightPolicy.adjusted(baseArbitrationTuning, lowLight: on)`
-    /// from the untouched base, so calling this twice with the same `on` re-applies the identical
-    /// tuning rather than compounding an adjustment.
+    /// Idempotent: always recomputes from the untouched `baseArbitrationTuning`, so calling this
+    /// twice with the same `on` re-applies the identical tuning rather than compounding an
+    /// adjustment.
     func setLowLight(_ on: Bool) {
-        arbitration.setTuning(LowLightPolicy.adjusted(baseArbitrationTuning, lowLight: on))
+        isLowLight = on
+        recomputeTuning()
+    }
+
+    /// M3 Task 7: called by `TacitEngine` whenever the Settings tab's sensitivity picker changes
+    /// (`"tacit.sensitivity"`). Composed the same way `setLowLight` is: recomputed from
+    /// `baseArbitrationTuning`, through the NEW sensitivity trim, through whatever low-light state
+    /// is currently in effect — never the other way around (see `applied(to:)`'s doc comment on
+    /// `SensitivityTrim` for why sensitivity must compose FIRST, low light SECOND). Same
+    /// actor-isolation/atomicity/state-preservation guarantees as `setLowLight` above.
+    func setSensitivity(_ trim: SensitivityTrim) {
+        currentSensitivity = trim
+        recomputeTuning()
+    }
+
+    /// Fix (M3 Task 7): the M3 Task 6 version of this recompute swapped `arbitration`'s tuning
+    /// straight from `baseArbitrationTuning` through `LowLightPolicy.adjusted` alone — correct
+    /// while sensitivity didn't exist yet, but it would silently DISCARD the sensitivity trim on
+    /// every low-light flip (a low-light flip while "Eager" is selected would reset the user back
+    /// to the un-sensitized baseline plus the low-light raise, not "Eager" plus the low-light
+    /// raise). This is the single recompute both `setLowLight` and `setSensitivity` now funnel
+    /// through, always composed in the documented order: base → `currentSensitivity.applied(to:)`
+    /// → `LowLightPolicy.adjusted(_, lowLight: isLowLight)`.
+    private func recomputeTuning() {
+        let sensitized = currentSensitivity.applied(to: baseArbitrationTuning)
+        arbitration.setTuning(LowLightPolicy.adjusted(sensitized, lowLight: isLowLight))
     }
 
     /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds all

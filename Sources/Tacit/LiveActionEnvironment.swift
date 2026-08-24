@@ -70,9 +70,11 @@ enum AccessibilityPermission {
 /// Task 21 controller ruling (R5): launch-at-login defaults to ON for a fresh install. Runs at
 /// most once ever — gated by `tacit.launchAtLoginConfigured`, which is set regardless of whether
 /// `register()` actually succeeds — so this never re-fires on a later launch, and never fights a
-/// user who deliberately turns the toggle back off afterward. `PopoverView`'s "Launch at Login"
-/// toggle is unaffected by this (and unaware of it): it reads `SMAppService.mainApp.status`
-/// directly, so it continues to reflect whatever the real system state is either way.
+/// user who deliberately turns the toggle back off afterward. `LaunchAtLoginToggleRow`'s (M3 Task
+/// 7: shared by `PopoverView` and the Library window's `SettingsTab`, see `SharedControls.swift`)
+/// "Launch at Login" toggle is unaffected by this (and unaware of it): it reads
+/// `SMAppService.mainApp.status` directly, so it continues to reflect whatever the real system
+/// state is either way.
 enum LaunchAtLoginDefault {
     private static let configuredDefaultsKey = "tacit.launchAtLoginConfigured"
 

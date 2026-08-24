@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 extension View {
@@ -110,5 +111,58 @@ struct TacitToggleStyle: ToggleStyle {
                 configuration.isOn.toggle()
             }
         }
+    }
+}
+
+/// A "Launch at Login" toggle row backed by `SMAppService.mainApp` — the ONE place this
+/// read/register/unregister logic lives (M3 Task 7: extracted here specifically so `PopoverView`
+/// and the Library window's `SettingsTab` share exactly one implementation rather than each
+/// keeping its own `@State` copy of "is it currently enabled" that could drift out of sync with
+/// the other or with the real system state). Both call sites just drop in `LaunchAtLoginToggleRow()`
+/// with no parameters — the row owns its own state, sourced from (and always reconciled back to)
+/// `SMAppService.mainApp.status` itself, exactly as `PopoverView`'s original implementation did.
+struct LaunchAtLoginToggleRow: View {
+    @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: launchAtLoginBinding) {
+                Text("Launch at Login")
+                    .font(.body)
+            }
+            .toggleStyle(TacitToggleStyle())
+            .padding(.horizontal, 10)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLoginEnabled },
+            set: { setLaunchAtLogin($0) }
+        )
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            errorMessage = nil
+        } catch {
+            // Revert the toggle and show a one-line message, per brief.
+            errorMessage = "Couldn't update Login Items."
+        }
+        // Reflect the system's actual status either way — `register()`/`unregister()` can
+        // silently no-op (e.g. already in the requested state) as well as throw.
+        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
 }

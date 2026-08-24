@@ -21,7 +21,33 @@ struct LibraryWindow: View {
     private static let tierOrder: [GestureTier] = [.workhorse, .occasional, .deliberate]
     private static let gridColumns = [GridItem(.adaptive(minimum: 200), spacing: 16, alignment: .top)]
 
+    /// M3 Task 7: the window became a two-tab `TabView` — "Gestures" (this file's original,
+    /// unchanged specimen-grid content, now `gesturesTab` below) and "Settings"
+    /// (`Sources/Tacit/Library/SettingsTab.swift`, new). Quiet macOS style: plain text tab items,
+    /// no icons, default `TabView` chrome — nothing here reaches for a custom tab bar.
+    ///
+    /// The `.frame(minWidth:minHeight:)` that used to sit directly on the specimen-grid
+    /// `ScrollView` moved up to the `TabView` itself, since it now has to size BOTH tabs, not just
+    /// the grid; `gesturesTab` keeps its own `.background`/`.overlay`/`.onExitCommand` exactly as
+    /// before. Everything the stagger/expand behavior depends on — `cardNamespace`,
+    /// `expandedGesture`, `appearedIDs` — is unchanged `@State`/`@Namespace` on this same
+    /// `LibraryWindow`, so it survives this re-parenting: those are owned by the view that hosts
+    /// the `TabView`, not by a tab's content, and SwiftUI preserves a parent's `@State` across its
+    /// children being shown/hidden by tab selection.
     var body: some View {
+        TabView {
+            gesturesTab
+                .tabItem { Text("Gestures") }
+
+            SettingsTab(engine: engine)
+                .tabItem { Text("Settings") }
+        }
+        .frame(minWidth: 720, minHeight: 640)
+    }
+
+    // MARK: - Gestures tab (unchanged content, just re-parented under the TabView above)
+
+    private var gesturesTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
                 ForEach(Self.tierOrder, id: \.self) { tier in
@@ -31,7 +57,6 @@ struct LibraryWindow: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 720, minHeight: 640)
         .background(.background)
         .overlay { detailOverlay }
         .onExitCommand {
