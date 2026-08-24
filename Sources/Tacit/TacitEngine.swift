@@ -271,6 +271,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// spuriously release an unrelated one.
     private var activeHoldChord: KeyChord?
 
+    /// Workhorse-remap plan, Task 4: the `.toggleKeystroke` latch. Pure state in `TacitCore`;
+    /// this engine owns the key posting around it. See `releaseLatchIfNeeded()` for the complete
+    /// release-path inventory (the toggle's answer to `endActiveHoldIfNeeded()`).
+    private var keyLatch = KeyLatch()
+    /// The chord currently latched down via `.toggleKeystroke`, or `nil` — published so the
+    /// popover can show its "Release <key>" safety row (Task 5). Mirrors `keyLatch.active?.chord`.
+    @Published private(set) var latchedChord: KeyChord?
+
     /// Latest arbitration phase seen from the pipeline, kept outside `PipelineCore` so
     /// `recomputeGlyphState()` can be driven by capture-state changes too (which arrive via
     /// Combine, not via a frame).
@@ -334,6 +342,15 @@ final class TacitEngine: ObservableObject, EngineUIState {
                     $0.enabled && ($0.action?.requiresAccessibility ?? false)
                 }
                 self.recomputeAccessibilityWarning()
+
+                // Toggle latch: the latched gesture's binding changed out from under it.
+                if let active = self.keyLatch.active {
+                    let binding = bindings[active.gesture]
+                    let stillLatchBound = binding?.enabled == true && binding?.action == .toggleKeystroke(active.chord)
+                    if !stillLatchBound {
+                        self.releaseLatchIfNeeded()
+                    }
+                }
             }
             .store(in: &cancellables)
 
@@ -676,6 +693,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // still end a hold — the per-frame check in `apply(_:generation:timestamp:)` never
             // gets another chance to run.
             endActiveHoldIfNeeded()
+            // Toggle latch: same chokepoint, same reasons (see releaseLatchIfNeeded()).
+            releaseLatchIfNeeded()
         }
         recomputeGlyphState()
     }
@@ -848,6 +867,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
             return
         }
 
+        // Ruling 3: a hold of a chord that's already latched is a no-op — the key is down, and
+        // leaving `activeHoldChord` nil makes the matching `.ended` a no-op too, so the latch
+        // (not the hold) still owns the eventual key-up.
+        guard !keyLatch.isLatched(chord) else { return }
+
         guard actionEnvironment.isAccessibilityTrusted() else {
             if isHUDEnabled {
                 hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
@@ -880,6 +904,68 @@ final class TacitEngine: ObservableObject, EngineUIState {
         defer { hudController.endHold() }
         guard let chord = releaseActiveHold() else { return }
         _ = actionEnvironment.postKeyUp(chord)
+    }
+
+    /// A fire of a gesture bound to `.toggleKeystroke`. Engages, releases, or swaps the latch and
+    /// posts the matching key events synchronously (`.swapped` posts the old chord's up BEFORE the
+    /// new chord's down, so at most one latched key is ever down). User-initiated, so it shows
+    /// "<Gesture> → <key> on/off" (Ruling 4); the forced releases in `releaseLatchIfNeeded()` are
+    /// silent.
+    private func handleToggleFire(gesture: GestureID, chord: KeyChord) {
+        guard actionEnvironment.isAccessibilityTrusted() else {
+            if isHUDEnabled {
+                hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
+            }
+            return
+        }
+
+        let summary: String
+        switch keyLatch.toggle(gesture: gesture, chord: chord) {
+        case .engaged(let engaged):
+            _ = actionEnvironment.postKeyDown(engaged)
+            summary = "\(engaged.display) on"
+        case .released(let released):
+            _ = actionEnvironment.postKeyUp(released)
+            summary = "\(released.display) off"
+        case .swapped(let released, let engaged):
+            _ = actionEnvironment.postKeyUp(released)
+            _ = actionEnvironment.postKeyDown(engaged)
+            summary = "\(engaged.display) on"
+        }
+        latchedChord = keyLatch.active?.chord
+        if isHUDEnabled {
+            hudController.show(gesture: gesture, actionSummary: summary, frame: latestFrame)
+        }
+    }
+
+    /// The single chokepoint for every NON-toggle release of the latch. Posts the key-up
+    /// synchronously if — and only if — a chord was actually latched; safe to call when nothing is.
+    /// Silent by design (Ruling 4): the surface that caused it is the feedback.
+    ///
+    /// **Every place this is called, and why (the stuck-key audit for toggles):**
+    ///  - `handleCaptureStateChange` — capture paused/interrupted/unavailable: master toggle off,
+    ///    "Pause for an Hour", screen lock, display sleep, camera claimed elsewhere. No frames will
+    ///    arrive to toggle it off, so it must end here.
+    ///  - `handleApplicationWillTerminate` — app quit.
+    ///  - the `mappingStore.$bindings` sink — the latched gesture was rebound, cleared, or disabled
+    ///    in the Library (its binding is no longer `enabled` + `.toggleKeystroke(sameChord)`).
+    ///  - `releaseLatch()` — the popover's "Release <key>" row.
+    ///  - NOT on clutch disarm / command-window expiry (`apply(_:generation:timestamp:)`): the
+    ///    latch exists precisely so the hand can rest while dictation continues (Ruling 2).
+    private func releaseLatchIfNeeded() {
+        guard let chord = keyLatch.release() else { return }
+        latchedChord = nil
+        _ = actionEnvironment.postKeyUp(chord)
+    }
+
+    /// Popover "Release <key>" row (Task 5). User-initiated, so it's the one forced release that
+    /// does announce itself — using the latched gesture's own chip, like a second tap would.
+    func releaseLatch() {
+        guard let active = keyLatch.active else { return }
+        releaseLatchIfNeeded()
+        if isHUDEnabled {
+            hudController.show(gesture: active.gesture, actionSummary: "\(active.chord.display) off", frame: latestFrame)
+        }
     }
 
     /// Shared by `handleHoldEnded(_:)` and `handleApplicationWillTerminate()` (post-review MINOR
@@ -934,6 +1020,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// real stuck key from that class of exit is a known, documented limitation outside this
     /// method's control, not something any user-space code can prevent.
     private func handleApplicationWillTerminate() {
+        releaseLatchIfNeeded()
         guard holdTracker.reset() != nil else { return }
         defer { hudController.endHold() }
         guard let chord = releaseActiveHold() else { return }
@@ -950,6 +1037,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private func handleFire(_ event: GestureEvent) {
         let binding = mappingStore.binding(for: event.gesture)
         guard binding.enabled, let action = binding.action else { return }
+
+        // Workhorse-remap plan, Task 4: `.toggleKeystroke` is engine-owned exactly like
+        // `.holdKeystroke` — posted synchronously on the main actor (structural down/up ordering,
+        // see `handleHoldBegan(_:)`'s doc comment), never through `ActionDispatcher.dispatch`'s
+        // detached full-press fallback, and skipping `applyDispatchOutcome`'s first-fire
+        // bookkeeping (the toggle's own HUD line below is the feedback).
+        if case .toggleKeystroke(let chord) = action {
+            handleToggleFire(gesture: event.gesture, chord: chord)
+            return
+        }
 
         // Final-review finding F1 (CRITICAL): a `.holdKeystroke` binding on a HOLDABLE gesture
         // (`Self.holdableGestures`) must never be dispatched from here. `apply(_:generation:

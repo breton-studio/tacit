@@ -41,9 +41,9 @@ public enum TacitAction: Codable, Equatable, Sendable {
     /// backward-compatible for old `mappings.json` files, which simply never contain it.
     case focusTextInput
 
-    /// True for `.keystroke`, `.holdKeystroke`, and `.focusTextInput` — the cases that need
-    /// Accessibility permission to actually perform (posting a synthetic key event, or reading/
-    /// setting attributes on another app's UI elements via the AX API).
+    /// True for `.keystroke`, `.holdKeystroke`, `.toggleKeystroke`, and `.focusTextInput` — the
+    /// cases that need Accessibility permission to actually perform (posting a synthetic key
+    /// event, or reading/setting attributes on another app's UI elements via the AX API).
     public var requiresAccessibility: Bool {
         switch self {
         case .keystroke, .holdKeystroke, .toggleKeystroke, .focusTextInput: true
