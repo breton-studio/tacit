@@ -27,10 +27,13 @@ Produces `build/Tacit.app`, ad-hoc signed, ready to launch or move to `/Applicat
 Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. Tacit
 requests camera permission at launch, alongside a short first-run onboarding: Accessibility
 permission, learning the clutch, and a look at the preset gesture bindings you start with — among
-them three workflow defaults: a swipe switches apps, swipe-up focuses the nearest text field, and
-holding a point gesture holds down Fn, which is Wispr Flow's stock hotkey for push-to-talk
-dictation (rebindable like any other gesture if you use a different hotkey or dictation app). Tacit
-lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
+them the workflow defaults, all on resting-hand poses: a victory sign switches apps (⌘Tab), a
+thumbs-up focuses the nearest text field, holding a point gesture holds down Fn — Wispr Flow's
+stock push-to-talk hotkey — and a thumb-to-ring/pinky tap *toggles* Fn for hands-free dictation
+until you tap again (the menu bar popover shows a "Release" row while it's held). Copy, paste,
+undo and redo ride the thumb taps and thumb swipes. Everything else ships off; every binding is
+rebindable in the Library, where a keystroke can be delivered as a press, a hold, or a toggle.
+Tacit lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
 launch-at-login, and the gesture library, which also holds a Settings tab for picking a camera and
 trimming overall gesture sensitivity.
 

@@ -26,6 +26,7 @@ struct PopoverView<Engine: EngineUIState>: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             pauseButton
+            latchRow
 
             hairline
 
@@ -55,6 +56,7 @@ struct PopoverView<Engine: EngineUIState>: View {
         .frame(width: 272)
         .background(.ultraThinMaterial)
         .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: engine.warning)
+        .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: engine.latchedChord)
         // Debug-only reveal, no animation magic number needed: an instant show/hide while ⌥ is
         // held reads as "peeking behind a panel," not as a UI transition worth tokenizing.
         .onModifierKeysChanged(mask: .option) { _, newModifiers in
@@ -101,6 +103,27 @@ struct PopoverView<Engine: EngineUIState>: View {
             .font(.body)
         }
         .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
+    }
+
+    /// Shown only while a `.toggleKeystroke` chord is latched down — the always-visible way out
+    /// of a hands-free dictation latch (spec §6: never a silent held key). Plain verb, one accent
+    /// use is NOT warranted here (this is a state row, not the armed state).
+    @ViewBuilder
+    private var latchRow: some View {
+        if let chord = engine.latchedChord {
+            Button {
+                engine.releaseLatch()
+            } label: {
+                HStack {
+                    Text("Holding \(chord.display)")
+                    Spacer()
+                    Text("Release")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
+            .frame(minHeight: 44)
+        }
     }
 
     /// Finding I1 (spec §4): lets users disable the HUD confirmation panel while keeping glyph

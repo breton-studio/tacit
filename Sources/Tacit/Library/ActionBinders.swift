@@ -147,10 +147,11 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
     }
 
     /// The kind matching an existing action, or `.keystroke` for `nil` (brief: "keystroke if
-    /// none"). `.holdKeystroke` also maps to `.keystroke` here — M3 Task 11 gave that segment a
-    /// "Hold instead of press" toggle (see `KeystrokeBinder`) rather than a separate segment, so a
-    /// `.holdKeystroke` binding is shown, edited, and re-recorded right there, toggle already on;
-    /// `KeystrokeBinder.currentChord` recognizes both cases.
+    /// none"). `.holdKeystroke` and `.toggleKeystroke` also map to `.keystroke` here — M3 Task 11
+    /// / workhorse-remap Task 5 gave that segment a Press / Hold / Toggle delivery picker (see
+    /// `KeystrokeBinder`) rather than separate segments, so a `.holdKeystroke` or `.toggleKeystroke`
+    /// binding is shown, edited, and re-recorded right there, with the matching segment already
+    /// selected; `KeystrokeBinder.currentChord` recognizes all three cases.
     /// M3 Task 10: `.focusTextInput` gets its own dedicated fifth segment instead, since it's a
     /// fully first-class bindable action with no chord to share — see `FocusTextInputBinder`
     /// below.
@@ -167,36 +168,64 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
 
 // MARK: - Keystroke
 
+/// The three ways a recorded chord can be delivered — one segment each. `init(action:)` reads the
+/// mode back out of an existing binding so re-opening a card shows the right segment selected.
+private enum KeystrokeMode: CaseIterable, Identifiable, Hashable {
+    case press, hold, toggle
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .press: "Press"
+        case .hold: "Hold"
+        case .toggle: "Toggle"
+        }
+    }
+
+    init(action: TacitAction?) {
+        switch action {
+        case .holdKeystroke: self = .hold
+        case .toggleKeystroke: self = .toggle
+        default: self = .press
+        }
+    }
+
+    func action(for chord: KeyChord) -> TacitAction {
+        switch self {
+        case .press: .keystroke(chord)
+        case .hold: .holdKeystroke(chord)
+        case .toggle: .toggleKeystroke(chord)
+        }
+    }
+}
+
 /// Records the next keydown as the gesture's keystroke action. Uses a LOCAL event monitor —
 /// the card detail window is key while this is visible, so a local monitor sees the keydown
 /// without requiring Accessibility permission (that permission only gates actually *posting* a
 /// synthetic keystroke later, at dispatch time — see `TacitAction.requiresAccessibility`).
 ///
-/// M3 Task 11: also carries the "Hold instead of press" toggle. This segment is the only place
-/// `.holdKeystroke` is bindable from the UI — the recorder itself is unchanged (it still just
-/// captures a `KeyChord`); the toggle only decides which `TacitAction` case wraps that chord when
-/// it's saved. Recording a NEW chord always saves under the toggle's CURRENT value (so flipping
-/// the toggle after recording, with no further keypress, does nothing until the next record —
-/// same "nothing written until a capture actually commits" rule the type-level doc comment above
-/// describes for the segmented picker as a whole).
+/// workhorse-remap Task 5: also carries the Press / Hold / Toggle delivery picker; this segment
+/// is the only place `.holdKeystroke` and `.toggleKeystroke` are bindable from the UI — the
+/// recorder itself is unchanged (it still just captures a `KeyChord`); the picker only decides
+/// which `TacitAction` case wraps that chord when it's saved. Recording a NEW chord always saves
+/// under the picker's CURRENT selection (so switching the segment after recording, with no
+/// further keypress, does nothing until the next record — nothing written until a capture
+/// actually commits).
 private struct KeystrokeBinder: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
 
     @State private var isRecording = false
     @State private var monitor: Any?
-    /// Initialized from the entry's CURRENT binding (on) so re-opening a card with an existing
-    /// `.holdKeystroke` binding shows the toggle already flipped.
-    @State private var holdInsteadOfPress: Bool
+    /// Initialized from the entry's CURRENT binding so re-opening a card with an existing
+    /// `.holdKeystroke` or `.toggleKeystroke` binding shows the matching segment already selected.
+    @State private var mode: KeystrokeMode
 
     init(entry: CatalogEntry, store: MappingStore) {
         self.entry = entry
         self.store = store
-        if case .holdKeystroke = store.binding(for: entry.id).action {
-            _holdInsteadOfPress = State(initialValue: true)
-        } else {
-            _holdInsteadOfPress = State(initialValue: false)
-        }
+        _mode = State(initialValue: KeystrokeMode(action: store.binding(for: entry.id).action))
     }
 
     var body: some View {
@@ -205,9 +234,14 @@ private struct KeystrokeBinder: View {
                 .font(.callout)
                 .foregroundStyle(currentChord == nil ? .secondary : .primary)
 
-            Toggle("Hold instead of press", isOn: $holdInsteadOfPress)
-                .toggleStyle(TacitToggleStyle())
-                .frame(minHeight: 44)
+            Picker("Delivery", selection: $mode) {
+                ForEach(KeystrokeMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(minHeight: 44)
 
             Button(isRecording ? "Press keys…" : "Record Shortcut") {
                 startRecording()
@@ -220,13 +254,13 @@ private struct KeystrokeBinder: View {
         .onDisappear { removeMonitor() }
     }
 
-    /// The chord behind the CURRENT binding, whichever of the two keystroke actions it is —
-    /// `.holdKeystroke` reads here too so an existing hold binding shows its recorded chord
-    /// instead of "No shortcut recorded" just because this text happens to live in the same
-    /// segment as the plain-press case.
+    /// The chord behind the CURRENT binding, whichever of the three keystroke actions it is —
+    /// `.holdKeystroke` and `.toggleKeystroke` read here too so an existing hold or toggle binding
+    /// shows its recorded chord instead of "No shortcut recorded" just because this text happens
+    /// to live in the same segment as the plain-press case.
     private var currentChord: KeyChord? {
         switch store.binding(for: entry.id).action {
-        case .keystroke(let chord), .holdKeystroke(let chord):
+        case .keystroke(let chord), .holdKeystroke(let chord), .toggleKeystroke(let chord):
             return chord
         default:
             return nil
@@ -241,7 +275,7 @@ private struct KeystrokeBinder: View {
             // Esc cancels without saving — matched before building/saving a chord.
             guard event.keyCode != 53 else { return nil }
             let chord = KeyChord(keyCode: event.keyCode, modifiers: modifiers(from: event.modifierFlags))
-            let action: TacitAction = holdInsteadOfPress ? .holdKeystroke(chord) : .keystroke(chord)
+            let action = mode.action(for: chord)
             store.setBinding(GestureBinding(enabled: true, action: action), for: entry.id)
             return nil // swallow — this keydown is input to the recorder, not to the app
         }

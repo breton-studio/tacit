@@ -22,8 +22,13 @@ protocol EngineUIState: ObservableObject {
     var isHUDEnabled: Bool { get set }
     /// Low light / permission rows, etc. `nil` means no warning to show.
     var warning: String? { get }
+    /// The chord a `.toggleKeystroke` currently has held down, or `nil` when nothing is latched.
+    /// Drives the popover's "Holding <key> · Release" row (workhorse-remap Task 5).
+    var latchedChord: KeyChord? { get }
     /// "Pause for an Hour" — pause detection for `duration` seconds, then resume.
     func pause(for duration: TimeInterval)
+    /// Popover "Release" row: forces the current latch (if any) off.
+    func releaseLatch()
 }
 
 // `StubEngine` (manual-verification stand-in cycling glyph states) and `PlaceholderEngine`

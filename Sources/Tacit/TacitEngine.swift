@@ -919,6 +919,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
             return
         }
 
+        // Ruling (Task 4 review): if a hold currently owns this chord, a toggle fire is a no-op —
+        // the hold's own `.ended` will post the key-up; engaging the latch here would double-post
+        // the key-down and leave the latch believing it owns a key it doesn't.
+        guard activeHoldChord != chord else { return }
+
         let summary: String
         switch keyLatch.toggle(gesture: gesture, chord: chord) {
         case .engaged(let engaged):
@@ -952,6 +957,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
     ///  - `releaseLatch()` — the popover's "Release <key>" row.
     ///  - NOT on clutch disarm / command-window expiry (`apply(_:generation:timestamp:)`): the
     ///    latch exists precisely so the hand can rest while dictation continues (Ruling 2).
+    ///  - NOT reached from `handleToggleFire` when a hold already owns the chord (Task 4 review
+    ///    ruling): that guard returns before `keyLatch.toggle(...)` is ever called, so the latch
+    ///    never believes it owns a key the hold is actually holding — the hold's own `.ended` is
+    ///    what posts that key-up, via `releaseActiveHold()`, not this chokepoint.
     private func releaseLatchIfNeeded() {
         guard let chord = keyLatch.release() else { return }
         latchedChord = nil
