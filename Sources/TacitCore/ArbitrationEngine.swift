@@ -60,6 +60,14 @@ public final class ArbitrationEngine {
         .wristRotateCW, .wristRotateCCW, .twoFingerScrollUp, .twoFingerScrollDown
     ]
 
+    /// Slack subtracted from a cooldown duration before the `now - last < cooldown` comparison, so
+    /// that a gap which is *supposed* to equal the cooldown exactly (e.g. two ticks arriving
+    /// `repeatCooldown` seconds apart) reliably clears it instead of being at the mercy of
+    /// `TimeInterval` (`Double`) representation noise — e.g. `1.0 + 2 * 0.1` is
+    /// `0.19999999999999996` short of `0.2`, which without this slack would still count as inside
+    /// a 0.2s cooldown and silently swallow a tick that should have fired.
+    private static let cooldownEpsilon: TimeInterval = 1e-9
+
     public init(tuning: ArbitrationTuning = ArbitrationTuning()) {
         self.tuning = tuning
     }
@@ -108,7 +116,9 @@ public final class ArbitrationEngine {
     /// (`.looseFist`/`.openPalm` are never fireable through either path) AND the per-gesture
     /// cooldown is clear — `tuning.repeatCooldown` for gestures in `repeatableGestures`
     /// (rotate/scroll ticks, so a sustained motion can fire on every increment), `tuning.cooldown`
-    /// for everything else. On fire, extends `windowEndsAt` to `now + commandWindow` — identical
+    /// for everything else, both compared with `cooldownEpsilon` slack so a gap that's meant to
+    /// exactly clear the cooldown does so regardless of `Double` representation noise. On fire,
+    /// extends `windowEndsAt` to `now + commandWindow` — identical
     /// to a normal `ingest` fire — and records the cooldown. Never touches `armingStartAt`,
     /// `debounceGesture`, or `debounceCount`, so it can neither arm/disarm the clutch nor perturb
     /// an in-flight static-pose debounce running through `ingest`.
@@ -119,7 +129,7 @@ public final class ArbitrationEngine {
 
         let gesture = candidate.gesture
         let cooldown = Self.repeatableGestures.contains(gesture) ? tuning.repeatCooldown : tuning.cooldown
-        if let last = lastFiredAt[gesture], now - last < cooldown {
+        if let last = lastFiredAt[gesture], now - last < cooldown - Self.cooldownEpsilon {
             return nil
         }
 
@@ -204,7 +214,7 @@ public final class ArbitrationEngine {
             return nil
         }
 
-        if let last = lastFiredAt[gesture], now - last < tuning.cooldown {
+        if let last = lastFiredAt[gesture], now - last < tuning.cooldown - Self.cooldownEpsilon {
             return nil
         }
 

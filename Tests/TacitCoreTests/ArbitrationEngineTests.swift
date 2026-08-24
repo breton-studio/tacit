@@ -341,12 +341,19 @@ func feed(
 }
 
 // MARK: 18. Repeatable gesture ticks spaced at 0.1s (under `repeatCooldown`) throttle: a tick only
-// fires once at least 0.2s has elapsed since the last fire. Ticks land at t = 1.0, 1.1, 1.2, 1.3,
-// 1.4; measured from the last *fire* (not the last tick), tick 0 fires (nothing fired yet), tick 1
-// is 0.1s after tick 0 (throttled), tick 2 is ~0.1999...s after tick 0 (still under 0.2s —
-// throttled), tick 3 is 0.3s after tick 0 (clears the cooldown — fires), tick 4 is ~0.1s after
-// tick 3 (throttled). Computed exactly (not assumed) because `TimeInterval` accumulation via
-// repeated `+0.1` doesn't land on an exact 0.2s boundary.
+// fires once at least `repeatCooldown - cooldownEpsilon` has elapsed since the last fire. Ticks
+// land at t = 1.0, 1.1, 1.2, 1.3, 1.4; measured from the last *fire* (not the last tick):
+//   tick 0 (t=1.0): nothing fired yet -> fires. last = 1.0.
+//   tick 1 (t=1.1): 1.1 - 1.0 = 0.10000000000000009 < 0.2 - eps -> throttled.
+//   tick 2 (t=1.2): 1.2 - 1.0 = 0.19999999999999996 (Double noise on `1.0 + 2*0.1`), which is
+//     NOT < 0.2 - 1e-9 (~0.199999999) -> the epsilon slack lets this clear the cooldown -> fires.
+//     (Without the epsilon this frame would be wrongly throttled — see the boundary test below.)
+//     last = 1.2.
+//   tick 3 (t=1.3): 1.3 - 1.2 = 0.10000000000000009 < 0.2 - eps -> throttled.
+//   tick 4 (t=1.4): 1.4 - 1.2 = 0.19999999999999996, NOT < 0.2 - eps (same noise/epsilon reasoning
+//     as tick 2) -> fires. last = 1.4.
+// Verified against the actual `Double` arithmetic (not assumed) since `TimeInterval` accumulation
+// via repeated `+0.1` doesn't land on an exact 0.2s boundary.
 @Test func repeatableTicksUnderRepeatCooldownThrottleToComputedPattern() {
     let e = ArbitrationEngine()
     _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
@@ -358,7 +365,27 @@ func feed(
         let candidate = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t)
         fired.append(e.ingestPreDebounced(candidate, at: t) != nil)
     }
-    #expect(fired == [true, false, false, true, false])
+    #expect(fired == [true, false, true, false, true])
+}
+
+// MARK: 18b. Boundary case in isolation: two ticks constructed to land exactly `repeatCooldown`
+// (0.2s) apart via literals `1.0` and `1.2` (not accumulated addition) still hit the same `Double`
+// representation noise — `1.2 - 1.0 == 0.19999999999999996`, a hair under `0.2` — so without the
+// epsilon slack this would be wrongly throttled. With it, the second tick fires.
+@Test func repeatableTickExactlyAtRepeatCooldownBoundaryFires() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    let t0 = 1.0
+    let t1 = 1.2
+    #expect(t1 - t0 == 0.19999999999999996) // documents the exact noise this test guards against
+
+    let first = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t0)
+    #expect(e.ingestPreDebounced(first, at: t0) != nil)
+
+    let second = GestureCandidate(gesture: .wristRotateCW, confidence: 0.9, timestamp: t1)
+    #expect(e.ingestPreDebounced(second, at: t1) != nil)
 }
 
 // MARK: 19. A non-repeatable momentary gesture still uses the 0.8s `cooldown`, not `repeatCooldown`
