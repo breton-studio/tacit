@@ -27,12 +27,13 @@ Produces `build/Tacit.app`, signed with your stable Apple Development (or Develo
 Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. Tacit
 requests camera permission at launch, alongside a short first-run onboarding: Accessibility
 permission, learning the clutch, and a look at the preset gesture bindings you start with — among
-them the workflow defaults, all on resting-hand poses: a victory sign switches apps (⌘Tab), a
-thumbs-up focuses the nearest text field, holding a point gesture holds down Fn — Wispr Flow's
-stock push-to-talk hotkey — and a thumb-to-ring/pinky tap *toggles* Fn for hands-free dictation
-until you tap again (the menu bar popover shows a "Release" row while it's held). Copy, paste,
-undo and redo ride the thumb taps and thumb swipes. Everything else ships off; every binding is
-rebindable in the Library, where a keystroke can be delivered as a press, a hold, or a toggle. The
+them the workflow defaults: a hand swipe right/left flips to the next/previous app directly (no
+⌘Tab, no switcher UI), a thumbs-up focuses the nearest text field, holding a point gesture holds
+down Fn — Wispr Flow's stock push-to-talk hotkey — and a thumb-to-ring/pinky tap *toggles* Fn for
+hands-free dictation until you tap again (the menu bar popover shows a "Release" row while it's
+held). Copy, paste, undo and redo ride the thumb taps and thumb swipes. Everything else ships off;
+every binding is rebindable in the Library, where a keystroke can be delivered as a press, a hold,
+or a toggle. The
 clutch itself is optional and off by default for now — gestures fire the moment they're
 recognized, at a stricter confidence floor — with a "Require clutch (fist to arm)" toggle in the
 popover and Settings tab for anyone who wants the fist hold back.

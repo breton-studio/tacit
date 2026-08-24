@@ -59,18 +59,16 @@ private let legacyWorkflowDefaultsAppliedKey = "tacit.workflowDefaultsApplied"
 
 private let fn = KeyChord(keyCode: 63, modifiers: [])
 
-// MARK: - First launch defaults (revision 3: workhorse remap)
+// MARK: - First launch defaults (revision 4: 2026-08-24 app-switch ruling on the workhorse remap)
 
 @MainActor
-@Test func firstLaunchHasTheWorkhorseCoreEnabledOnTheRevisionThreeDefaults() {
+@Test func firstLaunchHasTheWorkhorseCoreEnabledOnTheRevisionFourDefaults() {
     let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
 
     #expect(store.binding(for: .thumbIndexTap) ==
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command])))) // ⌘C
     #expect(store.binding(for: .thumbMiddleTap) ==
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command])))) // ⌘V
-    #expect(store.binding(for: .victory) ==
-        GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command])))) // ⌘Tab
     #expect(store.binding(for: .thumbsUp) == GestureBinding(enabled: true, action: .focusTextInput))
     #expect(store.binding(for: .thumbSwipeBackward) ==
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command])))) // ⌘Z
@@ -80,11 +78,28 @@ private let fn = KeyChord(keyCode: 63, modifiers: [])
     #expect(store.binding(for: .thumbRingPinkyTap) == GestureBinding(enabled: true, action: .toggleKeystroke(fn)))
 }
 
+/// 2026-08-24 product ruling: swipe right/left flip directly to the next/previous app —
+/// `.switchApp`, never ⌘Tab, never the system switcher.
 @MainActor
-@Test func firstLaunchHasTheDynamicSwipesOffWithSuggestions() {
+@Test func firstLaunchHasTheAppSwitchSwipesEnabled() {
     let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
-    #expect(store.binding(for: .swipeRight) ==
-        GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])))) // ⌃→
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
+}
+
+/// Victory is freed up by the app-switch move (it carried rev 3's ⌘Tab binding) and ships
+/// disabled with a ⌃Tab suggestion — never ⌘Tab, which would summon the very switcher this
+/// feature exists to avoid.
+@MainActor
+@Test func firstLaunchHasVictoryOffWithACtrlTabSuggestion() {
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
+    #expect(store.binding(for: .victory) ==
+        GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))) // ⌃Tab
+}
+
+@MainActor
+@Test func firstLaunchHasTheRemainingDynamicSwipesOffWithSuggestions() {
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
     #expect(store.binding(for: .swipeUp) ==
         GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])))) // ⌃↑
 }
@@ -97,12 +112,12 @@ private let fn = KeyChord(keyCode: 63, modifiers: [])
 }
 
 @MainActor
-@Test func firstLaunchOnlyTheEightWorkhorseBindingsAndTwoReservedAreEnabled() {
+@Test func firstLaunchOnlyTheNineWorkhorseBindingsAndTwoReservedAreEnabled() {
     let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
     let enabledIDs = Set(GestureID.allCases.filter { store.binding(for: $0).enabled })
     let expected: Set<GestureID> = [
-        .thumbIndexTap, .thumbMiddleTap, .victory, .thumbsUp, .thumbSwipeBackward, .thumbSwipeForward,
-        .indexPoint, .thumbRingPinkyTap,
+        .thumbIndexTap, .thumbMiddleTap, .thumbsUp, .thumbSwipeBackward, .thumbSwipeForward,
+        .indexPoint, .thumbRingPinkyTap, .swipeLeft, .swipeRight,
         .looseFist, .openPalm,
     ]
     #expect(enabledIDs == expected)
@@ -201,13 +216,21 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     let flags = makeTempUserDefaults()
     let store = MappingStore(directory: makeTempDirectory(), userDefaults: flags)
     #expect(flags.integer(forKey: defaultsRevisionKey) == MappingStore.currentDefaultsRevision)
-    #expect(store.binding(for: .victory).action == .keystroke(KeyChord(keyCode: 48, modifiers: [.command])))
+    // Rev 4: victory is disabled with a ⌃Tab suggestion — app-switching moved to swipeRight/
+    // swipeLeft, and no default anywhere posts ⌘Tab any more.
+    #expect(store.binding(for: .victory) ==
+        GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control]))))
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
 }
 
-/// The core scenario for the user's own install: a rev-2 file (M3 top-up already applied, legacy
-/// bool flag set) sitting exactly on the old defaults. Every changed gesture moves to rev 3.
+/// The core scenario for a rev-2 install (M3 top-up already applied, legacy bool flag set)
+/// sitting exactly on the old defaults: it walks BOTH rev 3 and rev 4 in one shot, since a
+/// binding topped up by rev 3 can immediately match rev 4's `old` value too (rev 3 turns
+/// swipeRight/victory into exactly the values rev 4 expects as ITS starting point) — the whole
+/// point of the chain being applied in revision order on every load.
 @MainActor
-@Test func untouchedRevisionTwoFileIsMovedToRevisionThree() throws {
+@Test func untouchedRevisionTwoFileWalksThroughRevisionThreeAndFour() throws {
     let dir = makeTempDirectory()
     let fileURL = try writeV2File([
         "victory": rev2Victory, "thumbsUp": rev2ThumbsUp,
@@ -219,22 +242,27 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
 
     let store = MappingStore(directory: dir, userDefaults: flags)
 
-    #expect(store.binding(for: .victory) == GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command]))))
+    // rev 3 alone would land victory on ⌘Tab, but rev 4's `old` is exactly that ⌘Tab value, so
+    // it keeps walking straight through to rev 4's disabled ⌃Tab suggestion.
+    #expect(store.binding(for: .victory) == GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control]))))
     #expect(store.binding(for: .thumbsUp) == GestureBinding(enabled: true, action: .focusTextInput))
-    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control]))))
+    // Same shape for swipeRight: rev 3 alone lands it on the disabled ⌃→ suggestion, but rev 4's
+    // `old` is exactly that, so it keeps walking to the enabled `.switchApp(.next)` default.
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .swipeUp) == GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control]))))
     #expect(store.binding(for: .thumbRingPinkyTap) == GestureBinding(enabled: true, action: .toggleKeystroke(fn)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 3)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 4)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.version == 2)
     #expect(onDisk.bindings["thumbRingPinkyTap"] == GestureBinding(enabled: true, action: .toggleKeystroke(fn)))
 }
 
-/// A customized binding — anything not EXACTLY equal to the old default — is left alone, while
-/// its untouched neighbours still move.
+/// A customized binding — anything not EXACTLY equal to the old default at whichever step it's
+/// checked — is left alone at every step of the chain, while its untouched neighbours still move
+/// all the way through to the current revision.
 @MainActor
-@Test func customizedBindingsSurviveTheRevisionThreeTopUp() throws {
+@Test func customizedBindingsSurviveTheRevisionChainTopUp() throws {
     let dir = makeTempDirectory()
     let usersVictory = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command, .shift]))) // ⇧⌘Tab
     let usersDisabledThumbsUp = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 36, modifiers: []))) // turned off
@@ -248,12 +276,15 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
 
     #expect(store.binding(for: .victory) == usersVictory)
     #expect(store.binding(for: .thumbsUp) == usersDisabledThumbsUp)
-    #expect(store.binding(for: .swipeRight).enabled == false)
+    // swipeRight was never customized, so it still walks the whole chain through to rev 4's
+    // enabled `.switchApp(.next)` default — exactly like the untouched-file test above.
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
 }
 
-/// A pre-M3 file (no flag, no revision key) gets revision 2 THEN revision 3, in order: the
-/// rev-2 top-up enables swipeRight→⌘Tab, and rev 3 then turns it back off — so the net result
-/// equals a fresh rev-3 install for anything the user never touched.
+/// A pre-M3 file (no flag, no revision key) walks revisions 2, 3, AND 4 in order — the net result
+/// equals a fresh rev-4 install for anything the user never touched, even though several of these
+/// bindings pass through intermediate values along the way (e.g. swipeRight/victory are each
+/// rewritten twice before landing on their final rev-4 value).
 @MainActor
 @Test func preM3FileWalksTheWholeChainInOrder() throws {
     let dir = makeTempDirectory()
@@ -268,10 +299,71 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     let store = MappingStore(directory: dir, userDefaults: flags)
 
     #expect(store.binding(for: .indexPoint) == GestureBinding(enabled: true, action: .holdKeystroke(fn)))
-    #expect(store.binding(for: .swipeRight).enabled == false)
+    // swipeRight: rev2 old (disabled ⌃→) -> rev2 new (enabled ⌘Tab) -> matches rev3's old ->
+    // rev3 new (disabled ⌃→, same shape it started with) -> matches rev4's old -> rev4 new
+    // (enabled .switchApp(.next)).
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    // swipeUp: rev2 old (disabled ⌃↑) -> rev2 new (enabled .focusTextInput) -> matches rev3's old
+    // -> rev3 new (disabled ⌃↑, same shape it started with); no rev4 entry for swipeUp.
     #expect(store.binding(for: .swipeUp).enabled == false)
-    #expect(store.binding(for: .victory).action == .keystroke(KeyChord(keyCode: 48, modifiers: [.command])))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 3)
+    // victory: untouched by rev2 (no entry there) -> matches rev3's old (⌃Tab) -> rev3 new
+    // (⌘Tab) -> matches rev4's old -> rev4 new (disabled ⌃Tab).
+    #expect(store.binding(for: .victory) == GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control]))))
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 4)
+}
+
+// MARK: - Defaults revision 4 (2026-08-24 app-switch ruling)
+
+/// The realistic scenario for anyone who installed after the workhorse remap shipped: a file
+/// already stamped at revision 3, sitting exactly on the rev-3 defaults. Only rev 4's three
+/// changes (swipeRight, swipeLeft, victory) apply; everything else is untouched.
+@MainActor
+@Test func untouchedRevisionThreeFileMovesToRevisionFour() throws {
+    let dir = makeTempDirectory()
+    let rev3Victory = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command]))) // ⌘Tab
+    let rev3SwipeRight = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control]))) // ⌃→
+    let rev3SwipeLeft = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control]))) // ⌃←
+    let fileURL = try writeV2File([
+        "victory": rev3Victory, "swipeRight": rev3SwipeRight, "swipeLeft": rev3SwipeLeft,
+        "thumbsUp": rev2ThumbsUp, // deliberately NOT the rev3 result (.focusTextInput) — proves it's untouched
+    ], in: dir)
+    let flags = makeTempUserDefaults()
+    flags.set(3, forKey: defaultsRevisionKey) // already fully topped up to rev 3
+
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    #expect(store.binding(for: .victory) == GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))) // ⌃Tab
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
+    // Untouched by rev 4 (no entry) — stays exactly as the file had it, not the rev-3 topped-up value.
+    #expect(store.binding(for: .thumbsUp) == rev2ThumbsUp)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 4)
+
+    let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
+    #expect(onDisk.bindings["swipeRight"] == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(onDisk.bindings["swipeLeft"] == GestureBinding(enabled: true, action: .switchApp(.previous)))
+}
+
+/// A rev-3-stamped file with victory already customized — not exactly rev 4's `old` value — keeps
+/// its customization, while its untouched neighbours (swipeRight/swipeLeft) still move to rev 4.
+@MainActor
+@Test func customizedVictorySurvivesRevisionFourTopUp() throws {
+    let dir = makeTempDirectory()
+    let usersVictory = GestureBinding(enabled: false, action: .runShortcut(name: "Switch Space")) // fully customized, off ⌘Tab entirely
+    let rev3SwipeRight = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])))
+    let rev3SwipeLeft = GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control])))
+    _ = try writeV2File([
+        "victory": usersVictory, "swipeRight": rev3SwipeRight, "swipeLeft": rev3SwipeLeft,
+    ], in: dir)
+    let flags = makeTempUserDefaults()
+    flags.set(3, forKey: defaultsRevisionKey)
+
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    #expect(store.binding(for: .victory) == usersVictory)
+    #expect(store.binding(for: .swipeRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 4)
 }
 
 /// Once stamped at the current revision, a later load never re-applies — a user who turns the

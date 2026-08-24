@@ -21,6 +21,12 @@ public struct ActionEnvironment: Sendable {
     /// API; returns `false` if no suitable text element could be found/focused (the AX search
     /// itself lives in `LiveActionEnvironment` — see its doc comment for the search order/limits).
     public var focusTextInput: @Sendable () -> Bool
+    /// 2026-08-24 product ruling: activates the next/previous app in the frozen MRU flip ring
+    /// DIRECTLY (`NSRunningApplication.activate`) — never posts ⌘Tab, never shows the switcher.
+    /// Returns `false` if there was nothing to activate (e.g. an empty snapshot). The ring itself
+    /// (`AppSwitchRing`) and its `NSWorkspace` owner (`AppSwitcher`) live in the app target — see
+    /// `LiveActionEnvironment.make()`.
+    public var switchApp: @Sendable (AppSwitchDirection) -> Bool
     public var isAccessibilityTrusted: @Sendable () -> Bool
 
     public init(
@@ -31,6 +37,7 @@ public struct ActionEnvironment: Sendable {
         openURL: @Sendable @escaping (String) -> Bool,
         runShortcut: @Sendable @escaping (String) -> Bool,
         focusTextInput: @Sendable @escaping () -> Bool,
+        switchApp: @Sendable @escaping (AppSwitchDirection) -> Bool,
         isAccessibilityTrusted: @Sendable @escaping () -> Bool
     ) {
         self.postKeystroke = postKeystroke
@@ -40,6 +47,7 @@ public struct ActionEnvironment: Sendable {
         self.openURL = openURL
         self.runShortcut = runShortcut
         self.focusTextInput = focusTextInput
+        self.switchApp = switchApp
         self.isAccessibilityTrusted = isAccessibilityTrusted
     }
 }
@@ -135,6 +143,12 @@ public struct ActionDispatcher: Sendable {
         case .focusTextInput:
             guard environment.focusTextInput() else {
                 return .failed("Couldn't find a text field.")
+            }
+            return .performed
+
+        case .switchApp(let direction):
+            guard environment.switchApp(direction) else {
+                return .failed("Couldn't switch app")
             }
             return .performed
         }

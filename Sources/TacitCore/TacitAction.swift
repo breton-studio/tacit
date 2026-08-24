@@ -41,13 +41,25 @@ public enum TacitAction: Codable, Equatable, Sendable {
     /// backward-compatible for old `mappings.json` files, which simply never contain it.
     case focusTextInput
 
+    /// 2026-08-24 product ruling: "flip through apps with one gesture, right/left, never summon
+    /// the app switcher." Activates apps DIRECTLY via `NSRunningApplication.activate` — never
+    /// posts ⌘Tab, never shows the system switcher UI. The frozen MRU walk this drives lives in
+    /// `AppSwitchRing` (pure) / `AppSwitcher` (the app-target `NSWorkspace` owner); this case is
+    /// just the routing token `ActionDispatcher` matches on, exactly like `.focusTextInput` above.
+    /// Codable via synthesis: adding this case is backward-compatible for old `mappings.json`
+    /// files, which simply never contain it.
+    case switchApp(AppSwitchDirection)
+
     /// True for `.keystroke`, `.holdKeystroke`, `.toggleKeystroke`, and `.focusTextInput` — the
     /// cases that need Accessibility permission to actually perform (posting a synthetic key
     /// event, or reading/setting attributes on another app's UI elements via the AX API).
+    /// `.switchApp` activates another app via `NSRunningApplication.activate`, an ordinary
+    /// `NSWorkspace`-adjacent API that needs no Accessibility grant — `false`, alongside
+    /// `.launchApp`/`.openURL`/`.runShortcut`.
     public var requiresAccessibility: Bool {
         switch self {
         case .keystroke, .holdKeystroke, .toggleKeystroke, .focusTextInput: true
-        case .launchApp, .openURL, .runShortcut: false
+        case .launchApp, .openURL, .runShortcut, .switchApp: false
         }
     }
 
@@ -64,6 +76,11 @@ public enum TacitAction: Codable, Equatable, Sendable {
         case .openURL(let string): string
         case .runShortcut(let name): "Shortcut: \(name)"
         case .focusTextInput: "Focus text input"
+        case .switchApp(let direction):
+            switch direction {
+            case .next: "Next app"
+            case .previous: "Previous app"
+            }
         }
     }
 }

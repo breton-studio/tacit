@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 
 /// Task 18: the action binder mounted in `CardDetailView`'s "ACTION" region (never for
 /// reserved entries — that whole region stays hidden there; see
-/// `CardDetailView.actionBinderSection`). A segmented picker of `ActionKind` — five segments as
-/// of M3 Task 10's `.focusTextInput` addition (see `ActionKind` below) — defaulting to whichever
+/// `CardDetailView.actionBinderSection`). A segmented picker of `ActionKind` — six segments as
+/// of the 2026-08-24 `.switchApp` addition (see `ActionKind` below) — defaulting to whichever
 /// kind the entry's current binding already uses (keystroke if unbound),
 /// with that kind's binder body underneath.
 ///
@@ -60,6 +60,8 @@ struct ActionBinderView: View {
                 ShortcutBinder(entry: entry, store: store)
             case .focusTextInput:
                 FocusTextInputBinder(entry: entry, store: store)
+            case .switchApp:
+                SwitchAppBinder(entry: entry, store: store)
             }
         }
         .onAppear { startAccessibilityPolling() }
@@ -132,7 +134,7 @@ struct ActionBinderView: View {
 /// The five bindable action kinds, in the brief's fixed order. Distinct from `TacitAction` itself
 /// so the segmented picker has something to select over before any action value exists yet.
 private enum ActionKind: CaseIterable, Identifiable, Hashable {
-    case keystroke, launchApp, openURL, runShortcut, focusTextInput
+    case keystroke, launchApp, openURL, runShortcut, focusTextInput, switchApp
 
     var id: Self { self }
 
@@ -143,6 +145,7 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
         case .openURL: "Open URL"
         case .runShortcut: "Run Shortcut"
         case .focusTextInput: "Focus Input"
+        case .switchApp: "Switch App"
         }
     }
 
@@ -162,6 +165,7 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
         case .openURL: self = .openURL
         case .runShortcut: self = .runShortcut
         case .focusTextInput: self = .focusTextInput
+        case .switchApp: self = .switchApp
         }
     }
 }
@@ -515,5 +519,45 @@ private struct FocusTextInputBinder: View {
 
     private func save() {
         store.setBinding(GestureBinding(enabled: true, action: .focusTextInput), for: entry.id)
+    }
+}
+
+// MARK: - Switch App (2026-08-24 product ruling)
+
+/// No chord to record — a two-segment Next / Previous picker saves immediately on selection,
+/// exactly like `FocusTextInputBinder`'s single Save button has no configuration to gather first.
+private struct SwitchAppBinder: View {
+    var entry: CatalogEntry
+    @ObservedObject var store: MappingStore
+
+    @State private var direction: AppSwitchDirection
+
+    init(entry: CatalogEntry, store: MappingStore) {
+        self.entry = entry
+        self.store = store
+        if case .switchApp(let direction) = store.binding(for: entry.id).action {
+            _direction = State(initialValue: direction)
+        } else {
+            _direction = State(initialValue: .next)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Activates the next/previous app directly — never shows the app switcher.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Picker("Direction", selection: $direction) {
+                Text("Next").tag(AppSwitchDirection.next)
+                Text("Previous").tag(AppSwitchDirection.previous)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(minHeight: 44)
+            .onChange(of: direction) { _, newValue in
+                store.setBinding(GestureBinding(enabled: true, action: .switchApp(newValue)), for: entry.id)
+            }
+        }
     }
 }

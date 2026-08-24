@@ -442,6 +442,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         registerForScreenStateNotifications()
 
+        // 2026-08-24 product ruling: force `AppSwitcher.shared` into existence now (rather than
+        // waiting for the first swipe) so its MRU list is already seeded and its `NSWorkspace`
+        // notification observers are already registered by the time a flip actually happens —
+        // the first swipe right/left after launch shouldn't fall back to a cold, just-seeded list.
+        _ = AppSwitcher.shared
+
         TacitLog.engine.notice("engine init: AXIsProcessTrusted=\(AXIsProcessTrusted(), privacy: .public)")
     }
 

@@ -112,6 +112,23 @@ enum LiveActionEnvironment {
             // `Task.detached` in `handleFire(_:)` — see that call site's doc comment — never
             // synchronously from the main actor.
             focusTextInput: { AXTextInputFocuser.focusFrontmostTextInput() },
+            // 2026-08-24 product ruling: `ActionDispatcher.dispatch` is only ever invoked from
+            // `TacitEngine.handleFire`'s `Task.detached` — i.e. NEVER on the main actor/thread
+            // (see that call site's doc comment) — while `AppSwitcher.shared` is `@MainActor`.
+            // `DispatchQueue.main.sync` is the synchronous hop this closure needs: it blocks the
+            // detached task's own thread (never the main thread, since the caller is guaranteed
+            // off-main) until the main-actor `flip(_:)` call completes and hands back its `Bool`,
+            // which a fire-and-forget `Task { @MainActor in ... }` couldn't do — `dispatch(_:)`'s
+            // signature is synchronous, not `async`. `MainActor.assumeIsolated` inside the block is
+            // then safe/required: `DispatchQueue.main.sync`'s block genuinely runs ON the main
+            // thread, which is what backs the main actor's executor.
+            switchApp: { direction in
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated {
+                        AppSwitcher.shared.flip(direction)
+                    }
+                }
+            },
             isAccessibilityTrusted: { AXIsProcessTrusted() }
         )
     }

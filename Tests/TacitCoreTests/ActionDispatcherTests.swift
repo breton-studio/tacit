@@ -12,6 +12,8 @@ import Testing
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").requiresAccessibility == false)
     #expect(TacitAction.openURL("superwhisper://record").requiresAccessibility == false)
     #expect(TacitAction.runShortcut(name: "Focus").requiresAccessibility == false)
+    #expect(TacitAction.switchApp(.next).requiresAccessibility == false)
+    #expect(TacitAction.switchApp(.previous).requiresAccessibility == false)
 }
 
 @Test func summaryDescribesEachAction() {
@@ -21,6 +23,8 @@ import Testing
     #expect(TacitAction.openURL("superwhisper://record").summary == "superwhisper://record")
     #expect(TacitAction.runShortcut(name: "Focus").summary == "Shortcut: Focus")
     #expect(TacitAction.focusTextInput.summary == "Focus text input")
+    #expect(TacitAction.switchApp(.next).summary == "Next app")
+    #expect(TacitAction.switchApp(.previous).summary == "Previous app")
 }
 
 /// M3 Task 11 (fix pass): renamed from `holdKeystrokeSummarySpecialCasesFnKeyCode63` — there's no
@@ -56,6 +60,8 @@ import Testing
         .runShortcut(name: "Focus"),
         .focusTextInput,
         .toggleKeystroke(KeyChord(keyCode: 63, modifiers: [])),
+        .switchApp(.next),
+        .switchApp(.previous),
     ]
     for action in actions {
         let data = try JSONEncoder().encode(action)
@@ -89,6 +95,7 @@ private final class Spy: @unchecked Sendable {
     var openURLCalls: [String] = []
     var runShortcutCalls: [String] = []
     var focusTextInputCallCount = 0
+    var switchAppCalls: [AppSwitchDirection] = []
     var isAccessibilityTrustedCallCount = 0
 
     var postKeystrokeResult = true
@@ -98,6 +105,7 @@ private final class Spy: @unchecked Sendable {
     var openURLResult = true
     var runShortcutResult = true
     var focusTextInputResult = true
+    var switchAppResult = true
     var isAccessibilityTrustedResult = true
 
     var postKeyDownCalls: [KeyChord] { keyDirectionCalls.filter { $0.direction == "down" }.map(\.chord) }
@@ -113,6 +121,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
         openURL: { string in spy.openURLCalls.append(string); return spy.openURLResult },
         runShortcut: { name in spy.runShortcutCalls.append(name); return spy.runShortcutResult },
         focusTextInput: { spy.focusTextInputCallCount += 1; return spy.focusTextInputResult },
+        switchApp: { direction in spy.switchAppCalls.append(direction); return spy.switchAppResult },
         isAccessibilityTrusted: { spy.isAccessibilityTrustedCallCount += 1; return spy.isAccessibilityTrustedResult }
     ))
 }
@@ -341,6 +350,43 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(outcome == .failed("Couldn't find a text field."))
 }
 
+// MARK: - .switchApp (2026-08-24 product ruling)
+
+@Test func dispatchSwitchAppNextCallsExactlySwitchAppWithNext() {
+    let spy = Spy()
+    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    #expect(outcome == .performed)
+    #expect(spy.switchAppCalls == [.next])
+    #expect(spy.postKeystrokeCalls.isEmpty)
+    #expect(spy.launchAppCalls.isEmpty)
+    #expect(spy.openURLCalls.isEmpty)
+    #expect(spy.runShortcutCalls.isEmpty)
+    #expect(spy.focusTextInputCallCount == 0)
+    #expect(spy.isAccessibilityTrustedCallCount == 0)
+}
+
+@Test func dispatchSwitchAppPreviousCallsExactlySwitchAppWithPrevious() {
+    let spy = Spy()
+    let outcome = makeDispatcher(spy).dispatch(.switchApp(.previous))
+    #expect(outcome == .performed)
+    #expect(spy.switchAppCalls == [.previous])
+}
+
+@Test func dispatchSwitchAppFailsWithFixedMessageWhenClosureReturnsFalse() {
+    let spy = Spy()
+    spy.switchAppResult = false
+    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    #expect(outcome == .failed("Couldn't switch app"))
+}
+
+@Test func dispatchSwitchAppNeverGatedByAccessibility() {
+    let spy = Spy()
+    spy.isAccessibilityTrustedResult = false
+    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    #expect(outcome == .performed)
+    #expect(spy.isAccessibilityTrustedCallCount == 0)
+}
+
 /// The dispatcher's Accessibility gate is derived from `TacitAction.requiresAccessibility`
 /// generically (not re-implemented per case) — this is the invariant that guarantees any FUTURE
 /// action with `requiresAccessibility == true` is automatically covered without anyone having to
@@ -365,6 +411,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
         .launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"),
         .openURL("superwhisper://record"),
         .runShortcut(name: "Focus"),
+        .switchApp(.next),
     ]
     for action in noAccessibilityActions {
         #expect(action.requiresAccessibility == false)

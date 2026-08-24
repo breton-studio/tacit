@@ -209,7 +209,7 @@ public final class MappingStore: ObservableObject {
 
     /// The revision `defaultBindings()` currently represents. Bump it and append a
     /// `DefaultsRevision` whenever a default VALUE changes for existing users.
-    public static let currentDefaultsRevision = 3
+    public static let currentDefaultsRevision = 4
 
     /// `UserDefaults` key holding the revision an install has been topped up to (Int).
     static let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -257,6 +257,25 @@ public final class MappingStore: ObservableObject {
             .thumbRingPinkyTap: (
                 old: GestureBinding(enabled: false, action: nil),
                 new: GestureBinding(enabled: true, action: .toggleKeystroke(fnChord))
+            ),
+        ]),
+        // 2026-08-24 product ruling ("flip through apps with one gesture, right/left, never
+        // summon the app switcher"): swipeRight/swipeLeft take over app-switching directly via
+        // `.switchApp` — never ⌘Tab, never the system switcher UI — so victory (which shipped rev
+        // 3's ⌘Tab binding) is freed up and disabled with a ⌃Tab suggestion instead; there is no
+        // more ⌘Tab anywhere in the defaults.
+        DefaultsRevision(revision: 4, changes: [
+            .swipeRight: (
+                old: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control]))),
+                new: GestureBinding(enabled: true, action: .switchApp(.next))
+            ),
+            .swipeLeft: (
+                old: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control]))),
+                new: GestureBinding(enabled: true, action: .switchApp(.previous))
+            ),
+            .victory: (
+                old: GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command]))),
+                new: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))
             ),
         ]),
     ]
@@ -316,10 +335,10 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6, defaults revision 3 — the 2026-08-24 workhorse remap):
-    /// eight enabled user commands, the two reserved clutch/disarm gestures, and
-    /// sensible-but-disabled suggestions (or `nil`, for continuous gestures with no discrete
-    /// action yet) for everything else.
+    /// The factory bindings (spec §3.6, defaults revision 4 — the 2026-08-24 app-switch ruling on
+    /// top of the same-day workhorse remap): nine enabled user commands, the two reserved
+    /// clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for continuous
+    /// gestures with no discrete action yet) for everything else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
@@ -338,11 +357,9 @@ public final class MappingStore: ObservableObject {
         )
 
         // Enabled — M3 Task 11's workflow trio, relocated onto workhorses by the 2026-08-24
-        // remap: app-switch (victory), text-field focus (thumbsUp), hold-to-dictate (indexPoint),
-        // toggle-dictate (thumbRingPinkyTap).
-        bindings[.victory] = GestureBinding(
-            enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command])) // ⌘Tab
-        )
+        // remap: text-field focus (thumbsUp), hold-to-dictate (indexPoint), toggle-dictate
+        // (thumbRingPinkyTap). App-switching itself moved off victory/⌘Tab onto swipeRight/
+        // swipeLeft below (defaults revision 4) — see those bindings' comments.
         bindings[.thumbsUp] = GestureBinding(enabled: true, action: .focusTextInput)
         bindings[.indexPoint] = GestureBinding(
             // Fn (keyCode 63) — Wispr Flow's stock hold-to-dictate hotkey.
@@ -357,15 +374,24 @@ public final class MappingStore: ObservableObject {
         bindings[.looseFist] = GestureBinding(enabled: true, action: nil)
         bindings[.openPalm] = GestureBinding(enabled: true, action: nil)
 
-        // Disabled, with a suggested action from the ergonomics report's mapping column.
-        bindings[.swipeRight] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])) // ⌃→ suggestion
+        // Enabled — defaults revision 4 (2026-08-24, "flip through apps with one gesture,
+        // right/left, never summon the app switcher"): a hand swipe right/left activates the
+        // next/previous app DIRECTLY via `NSRunningApplication.activate` — never posts ⌘Tab,
+        // never shows the system switcher.
+        bindings[.swipeRight] = GestureBinding(enabled: true, action: .switchApp(.next))
+        bindings[.swipeLeft] = GestureBinding(enabled: true, action: .switchApp(.previous))
+
+        // Disabled — defaults revision 4: freed up by app-switching's move onto swipeRight/
+        // swipeLeft above; ⌃Tab (not ⌘Tab — that would summon the system switcher, exactly what
+        // this feature exists to avoid) is left as a suggestion for anyone who wants victory
+        // bound to something again.
+        bindings[.victory] = GestureBinding(
+            enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])) // ⌃Tab suggestion
         )
+
+        // Disabled, with a suggested action from the ergonomics report's mapping column.
         bindings[.swipeUp] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])) // ⌃↑ suggestion
-        )
-        bindings[.swipeLeft] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control])) // ⌃←
         )
         bindings[.swipeDown] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: [.control])) // ⌃↓ App Exposé
