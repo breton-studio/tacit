@@ -20,6 +20,9 @@ protocol EngineUIState: ObservableObject {
     /// Final-review finding I1: whether the HUD confirmation panel shows on a fire (glyph feedback
     /// keeps working either way — see `TacitEngine.applyDispatchOutcome`).
     var isHUDEnabled: Bool { get set }
+    /// Gesture debug view toggle (popover "Show gesture debug view" row): shows/hides
+    /// `TacitEngine.debugPanelController`'s floating panel. See `TacitEngine.isDebugViewEnabled`.
+    var isDebugViewEnabled: Bool { get set }
     /// Low light / permission rows, etc. `nil` means no warning to show.
     var warning: String? { get }
     /// The chord a `.toggleKeystroke` currently has held down, or `nil` when nothing is latched.

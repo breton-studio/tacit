@@ -53,6 +53,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// setting. Persisted the same way as `isEnabled`: `UserDefaults`-backed, defaulting to `true`,
     /// written back on every change via the `$isHUDEnabled` sink wired in `init`.
     @Published var isHUDEnabled: Bool
+    /// Gesture debug view (menu bar popover toggle "Show gesture debug view"): shows/hides
+    /// `debugPanelController`'s floating panel and gates `debugSnapshot` population in
+    /// `apply(_:generation:timestamp:)` — `UserDefaults`-backed under `"tacit.debugViewEnabled"`,
+    /// defaulting to `false`, same pattern as `isHUDEnabled` above. Wired in `init` below: one sink
+    /// persists the value and drives `debugPanelController.setVisible(_:)`, a second forwards every
+    /// `debugSnapshot` change straight to the panel.
+    @Published var isDebugViewEnabled: Bool
     /// M3 Task 7 (Settings tab sensitivity segmented control): the Settings tab's global
     /// arbitration sensitivity trim, `UserDefaults`-backed under `"tacit.sensitivity"`, defaulting
     /// to `.standard`. Every change swaps `PipelineCore`'s live tuning via the SAME actor path
@@ -100,6 +107,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// instant a gesture is *performed*, with no clutch/arming/debounce in the way.
     @Published private(set) var previewCandidate: GestureCandidate?
 
+    /// Gesture debug view: a per-frame snapshot of the pipeline's live state (raw classifier
+    /// reading, arbitration phase, last fire, low-light/Accessibility status), populated by
+    /// `apply(_:generation:timestamp:)` ONLY while `isDebugViewEnabled` is `true` — `nil` the rest
+    /// of the time, and cleared immediately when the toggle turns off (see the `$isDebugViewEnabled`
+    /// sink in `init`) rather than left showing a stale last reading. See `GestureDebug.swift`.
+    @Published private(set) var debugSnapshot: GestureDebugSnapshot?
+
     /// Turns Task 19's perform-to-preview mode on/off. While `true`, `PipelineCore.process` also
     /// runs preview-scoped detectors and publishes their result via `previewCandidate` each frame;
     /// while `false` (the default), that extra work never runs, keeping the hot path clean. Settable
@@ -145,9 +159,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// (`PopoverView`'s ⌥-debug section keeps its own separate, never-wired `HUDController` for
     /// eyeballing motion manually — see that file's doc comment — so the two never collide.)
     let hudController = HUDController()
+    /// The gesture debug view's one floating panel instance — see `GestureDebugPanel.swift`'s doc
+    /// comment for the full design; wired to `isDebugViewEnabled`/`debugSnapshot` in `init` below,
+    /// the same "owned directly by the engine" pattern as `hudController` above.
+    let debugPanelController = GestureDebugPanelController()
 
     private static let enabledDefaultsKey = "tacit.enabled"
     private static let hudEnabledDefaultsKey = "tacit.hudEnabled"
+    private static let debugViewEnabledDefaultsKey = "tacit.debugViewEnabled"
     private static let sensitivityDefaultsKey = "tacit.sensitivity"
     private static let cameraIDDefaultsKey = "tacit.cameraID"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
@@ -306,6 +325,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
         self.isEnabled = stored ?? true
         let storedHUDEnabled = UserDefaults.standard.object(forKey: Self.hudEnabledDefaultsKey) as? Bool
         self.isHUDEnabled = storedHUDEnabled ?? true
+        let storedDebugViewEnabled = UserDefaults.standard.object(forKey: Self.debugViewEnabledDefaultsKey) as? Bool
+        self.isDebugViewEnabled = storedDebugViewEnabled ?? false
         let storedSensitivity = UserDefaults.standard.string(forKey: Self.sensitivityDefaultsKey)
             .flatMap(SensitivityTrim.init(rawValue:))
         self.sensitivity = storedSensitivity ?? .standard
@@ -330,6 +351,36 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 UserDefaults.standard.set(enabled, forKey: Self.hudEnabledDefaultsKey)
             }
             .store(in: &cancellables)
+
+        $isDebugViewEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                UserDefaults.standard.set(enabled, forKey: Self.debugViewEnabledDefaultsKey)
+                TacitLog.engine.notice("debug view -> \(enabled, privacy: .public)")
+                self.debugPanelController.setVisible(enabled)
+                if !enabled {
+                    // Don't leave the panel's last reading visible/stale for the next enable —
+                    // matches `debugSnapshot`'s own doc comment.
+                    self.debugSnapshot = nil
+                }
+            }
+            .store(in: &cancellables)
+
+        // Forwards every `debugSnapshot` change straight to the panel — `debugPanelController`
+        // never reads `TacitEngine` directly (see that type's doc comment), so this sink is the
+        // only path a new snapshot takes to reach the SwiftUI view.
+        $debugSnapshot
+            .sink { [weak self] snapshot in
+                self?.debugPanelController.update(snapshot)
+            }
+            .store(in: &cancellables)
+
+        // Sync the panel's initial visibility immediately: `dropFirst()` above only reacts to a
+        // CHANGE, so a persisted `isDebugViewEnabled == true` (the default this feature ships with,
+        // per the user's request to leave it on) needs this explicit call to actually show the
+        // panel at launch rather than waiting for the user to toggle it off and back on.
+        debugPanelController.setVisible(isDebugViewEnabled)
 
         // Spec §6's Accessibility-warning derivation (Task 20), unified onto the single owned
         // `mappingStore` (Task 21): recompute strategy is a periodic 5 s poll while any enabled
@@ -806,6 +857,26 @@ final class TacitEngine: ObservableObject, EngineUIState {
             handleFire(event)
         } else {
             recomputeGlyphState()
+        }
+
+        // Gesture debug view: zero cost while off (one branch, no allocation). `staticCandidate`
+        // is `PipelineCore.Result`'s raw, pre-clutch-gating classifier reading — populated here
+        // even while `disarmed`/`arming`, which is the whole point: a user tuning their hand/camera
+        // needs to see what the classifier thinks BEFORE the clutch ever gates it. `lastEvent`/
+        // `.timestamp` are read AFTER the fire handling above so a fire on THIS frame is already
+        // reflected. See `GestureDebug.swift`.
+        if isDebugViewEnabled {
+            debugSnapshot = GestureDebugSnapshot(
+                frame: result.frame,
+                handDetected: result.frame != nil,
+                staticCandidate: result.staticCandidate,
+                arbitration: result.arbitrationState,
+                lastFired: lastEvent?.gesture,
+                lastFiredAt: lastEvent?.timestamp,
+                isLowLight: lowLightPolicy.isLowLight,
+                isAccessibilityTrusted: AXIsProcessTrusted(),
+                timestamp: timestamp
+            )
         }
 
         // M3 Task 9: hold-gesture lifecycle. Fed every frame with the fired event (if any — for

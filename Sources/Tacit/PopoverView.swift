@@ -31,6 +31,7 @@ struct PopoverView<Engine: EngineUIState>: View {
             hairline
 
             hudToggleRow
+            debugViewToggleRow
             LaunchAtLoginToggleRow()
 
             if let warning = engine.warning {
@@ -135,6 +136,16 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
         .toggleStyle(TacitToggleStyle())
         .padding(.horizontal, 10)
+    }
+
+    /// Toggles `TacitEngine.debugPanelController`'s floating picture-in-picture panel — shows the
+    /// live constellation, raw classifier reading, and clutch phase so a user can tune their
+    /// hand/camera against what Tacit is actually seeing.
+    private var debugViewToggleRow: some View {
+        Toggle("Show gesture debug view", isOn: $engine.isDebugViewEnabled)
+            .toggleStyle(TacitToggleStyle())
+            .padding(.horizontal, 10)
+            .frame(minHeight: 44)
     }
 
     private func warningRow(_ warning: String) -> some View {

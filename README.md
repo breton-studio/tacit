@@ -35,7 +35,9 @@ undo and redo ride the thumb taps and thumb swipes. Everything else ships off; e
 rebindable in the Library, where a keystroke can be delivered as a press, a hold, or a toggle.
 Tacit lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
 launch-at-login, and the gesture library, which also holds a Settings tab for picking a camera and
-trimming overall gesture sensitivity.
+trimming overall gesture sensitivity. Flip "Show gesture debug view" in the popover for a small
+floating panel showing the live constellation, raw classifier reading, and clutch state, so you can
+tune your hand/camera against what Tacit is actually seeing.
 
 ## Test
 
