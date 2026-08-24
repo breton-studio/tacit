@@ -3,27 +3,9 @@ import Testing
 @testable import TacitCore
 
 // MARK: - Synthetic motion helpers
-
-/// Translates every present joint of `frame` by `(dx, dy)` and stamps it with timestamp `t`.
-/// This is how whole-hand-swipe motion paths are built from `SyntheticHand.openPalm()` /
-/// `.looseFist()`: a rigid translation preserves every inter-joint distance, so palm size
-/// (wrist -> middleMCP = 0.15, per `SyntheticHand`'s doc comment) and the open/fisted pose read
-/// stay exactly what they were pre-translation — only the palm center moves.
-private func shift(_ frame: LandmarkFrame, dx: Double, dy: Double, t: TimeInterval) -> LandmarkFrame {
-    var shifted = frame
-    for (joint, point) in shifted.joints {
-        shifted.joints[joint] = JointPoint(x: point.x + dx, y: point.y + dy, confidence: point.confidence)
-    }
-    shifted.timestamp = t
-    return shifted
-}
-
-/// `frame` with `joint` deleted entirely, simulating a dropped/untracked joint for one frame.
-private func droppingJoint(_ joint: HandJoint, from frame: LandmarkFrame) -> LandmarkFrame {
-    var dropped = frame
-    dropped.joints.removeValue(forKey: joint)
-    return dropped
-}
+//
+// `shift`/`droppingJoint` now live in `SyntheticHand.swift` (shared test-support, Task 5) — see
+// that file's doc comment for why.
 
 // Shared arithmetic for every test below (SyntheticHand's palm size is fixed at 0.15, and a rigid
 // translation doesn't change it):

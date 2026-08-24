@@ -62,16 +62,27 @@ struct NegativeSuiteTests {
 
     // MARK: - Full-chain replay helper
 
-    /// Runs `frames` through the full recognition chain and `engine`, one candidate per frame.
+    /// Runs `frames` through the full recognition chain and `engine`, one frame at a time,
+    /// mirroring `PipelineCore.process` (`Sources/Tacit/TacitEngine.swift`) and the `Harness` in
+    /// `PipelineIntegrationTests.swift` EXACTLY — not just in detector precedence order but in the
+    /// two-entry-point architecture itself (M3 Task 5 correction: the pre-Task-5 version of this
+    /// function merged a momentary candidate and the static candidate into ONE combined value
+    /// and fed it through a single `engine.ingest` call — a simplification that predates Task 21's
+    /// `ingestPreDebounced` split and was never actually equivalent to production: a momentary
+    /// detector's single-frame candidate could never satisfy `ingest`'s 3-consecutive-frame
+    /// debounce, so it could effectively never fire through that path regardless of how deliberate
+    /// the motion was — silently under-testing the exact risk this suite exists to police. Fixed
+    /// to match Harness/PipelineCore precisely):
     ///
-    /// Per frame: run the classifier, the tap detector, and the swipe detector. Candidate
-    /// priority is **tap > swipe > static pose** — this mirrors the planned production wiring
-    /// (Task 14): a tap fires on a single release frame and would otherwise be shadowed by
-    /// whatever static pose that same frame happens to classify as; a swipe is likewise a
-    /// discrete, multi-frame-integrated event that should win over a continuous per-frame pose
-    /// read. When neither detector produces anything this frame, the static classifier's
-    /// candidate (or nil) is used. Exactly one candidate (or nil) is fed to `engine.ingest` per
-    /// frame.
+    /// 1. The static classifier's candidate goes to `engine.ingest` first, unconditionally — the
+    ///    clutch/disarm path, exactly as before.
+    /// 2. A momentary candidate — **tap > thumbSwipe > handSwipe > fistToOpen > rotate tick >
+    ///    scroll tick** (first non-nil wins; identical order to `PipelineCore.process` and
+    ///    `Harness` — keep all three in lockstep) — goes through `engine.ingestPreDebounced`
+    ///    separately. `PinchDragDetector` is deliberately absent: it's preview-only (plan ruling
+    ///    2) and never appears in any production/negative-suite chain.
+    /// 3. If both return an event on the same frame, the momentary one wins, matching
+    ///    `PipelineCore.process`'s ledger-drop rule exactly.
     ///
     /// Returns every fired `GestureEvent`, in order, and `everArmed` — whether `engine.state` was
     /// ever observed as `.armed` at any point during replay (i.e. whether an arming hold ever
@@ -82,17 +93,27 @@ struct NegativeSuiteTests {
         let classifier = StaticPoseClassifier()
         var tapDetector = PinchTapDetector()
         var swipeDetector = ThumbSwipeDetector()
+        var handSwipeDetector = HandSwipeDetector()
+        var fistToOpenDetector = FistToOpenDetector()
+        var wristRotateDetector = WristRotateDetector()
+        var twoFingerScrollDetector = TwoFingerScrollDetector()
 
         var events: [GestureEvent] = []
         var everArmed = false
 
         for frame in frames {
             let poseCandidate = classifier.classify(frame)
-            let tapCandidate = tapDetector.ingest(frame)
-            let swipeCandidate = swipeDetector.ingest(frame)
-            let candidate = tapCandidate ?? swipeCandidate ?? poseCandidate
+            let staticEvent = engine.ingest(poseCandidate, at: frame.timestamp)
 
-            if let event = engine.ingest(candidate, at: frame.timestamp) {
+            let momentaryCandidate = tapDetector.ingest(frame)
+                ?? swipeDetector.ingest(frame)
+                ?? handSwipeDetector.ingest(frame)
+                ?? fistToOpenDetector.ingest(frame)
+                ?? wristRotateDetector.ingest(frame)
+                ?? twoFingerScrollDetector.ingest(frame)
+            let preDebouncedEvent = momentaryCandidate.flatMap { engine.ingestPreDebounced($0, at: frame.timestamp) }
+
+            if let event = preDebouncedEvent ?? staticEvent {
                 events.append(event)
             }
 
@@ -405,16 +426,25 @@ struct NegativeSuiteTests {
                 let classifier = StaticPoseClassifier()
                 var tapDetector = PinchTapDetector()
                 var swipeDetector = ThumbSwipeDetector()
+                var handSwipeDetector = HandSwipeDetector()
+                var fistToOpenDetector = FistToOpenDetector()
+                var wristRotateDetector = WristRotateDetector()
+                var twoFingerScrollDetector = TwoFingerScrollDetector()
                 let engine = ArbitrationEngine()
                 var everArmed = false
                 var everFired = false
                 var maxProgress = 0.0
                 for frame in frames {
                     let poseCandidate = classifier.classify(frame)
-                    let tapCandidate = tapDetector.ingest(frame)
-                    let swipeCandidate = swipeDetector.ingest(frame)
-                    let candidate = tapCandidate ?? swipeCandidate ?? poseCandidate
-                    if engine.ingest(candidate, at: frame.timestamp) != nil { everFired = true }
+                    let staticEvent = engine.ingest(poseCandidate, at: frame.timestamp)
+                    let momentaryCandidate = tapDetector.ingest(frame)
+                        ?? swipeDetector.ingest(frame)
+                        ?? handSwipeDetector.ingest(frame)
+                        ?? fistToOpenDetector.ingest(frame)
+                        ?? wristRotateDetector.ingest(frame)
+                        ?? twoFingerScrollDetector.ingest(frame)
+                    let preDebouncedEvent = momentaryCandidate.flatMap { engine.ingestPreDebounced($0, at: frame.timestamp) }
+                    if (preDebouncedEvent ?? staticEvent) != nil { everFired = true }
                     switch engine.state {
                     case .armed: everArmed = true
                     case .arming(let progress): maxProgress = max(maxProgress, progress)

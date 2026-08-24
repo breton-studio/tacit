@@ -3,40 +3,9 @@ import Testing
 @testable import TacitCore
 
 // MARK: - Synthetic motion helpers
-
-/// Rotates every present joint of `frame` by `degrees` around the wrist (standard math
-/// convention: positive = counter-clockwise, using the y-up rotation matrix
-/// `(x' , y') = (x cosθ - y sinθ, x sinθ + y cosθ)` applied to each joint's wrist-relative
-/// offset), and stamps it with timestamp `t`. Rotation is rigid, so it preserves every
-/// wrist-relative distance — palm size and the fisted/open finger-extension reads are unaffected;
-/// only the wrist→middleMCP vector's angle changes, by exactly `degrees`.
-private func rotate(_ frame: LandmarkFrame, degrees: Double, t: TimeInterval) -> LandmarkFrame {
-    guard let wrist = frame.point(.wrist) else { return frame }
-    var rotated = frame
-    let theta = degrees * Double.pi / 180
-    let cosT = cos(theta)
-    let sinT = sin(theta)
-    for (joint, point) in frame.joints {
-        let dx = point.x - wrist.x
-        let dy = point.y - wrist.y
-        let newX = wrist.x + dx * cosT - dy * sinT
-        let newY = wrist.y + dx * sinT + dy * cosT
-        rotated.joints[joint] = JointPoint(x: newX, y: newY, confidence: point.confidence)
-    }
-    rotated.timestamp = t
-    return rotated
-}
-
-/// Translates every present joint of `frame` by `(dx, dy)`, stamped at `t`. Identical technique
-/// to `HandSwipeDetectorTests`' `shift` helper: a rigid translation preserves palm size and pose.
-private func shift(_ frame: LandmarkFrame, dx: Double, dy: Double, t: TimeInterval) -> LandmarkFrame {
-    var shifted = frame
-    for (joint, point) in shifted.joints {
-        shifted.joints[joint] = JointPoint(x: point.x + dx, y: point.y + dy, confidence: point.confidence)
-    }
-    shifted.timestamp = t
-    return shifted
-}
+//
+// `rotate`/`shift` now live in `SyntheticHand.swift` (shared test-support, Task 5) — see that
+// file's doc comment for why.
 
 // Shared arithmetic for every rotate test below: `SyntheticHand.looseFist()` has wrist at
 // (0.5, 0.2) and middleMCP at (0.50, 0.35), so the wrist→middleMCP vector is (0, 0.15) and its

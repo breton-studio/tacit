@@ -722,14 +722,34 @@ private actor PipelineCore {
     /// into by) production recognition.
     private var tapDetector = PinchTapDetector()
     private var swipeDetector = ThumbSwipeDetector()
+    /// M3 Task 5: the four new dynamic-layer detectors, wired in at the same "every frame,
+    /// unconditionally" level as `tapDetector`/`swipeDetector` above — see `process(_:_:)`'s doc
+    /// comment for the full momentary precedence order they participate in. `PinchDragDetector`
+    /// has NO production instance here: per plan ruling 2, `.pinchDrag` ships recognition +
+    /// preview only in v1 (stays unbindable; true continuous 2D drag is a later milestone), so it
+    /// must never feed `arbitration.ingestPreDebounced`/production dispatch — only the PREVIEW
+    /// instance below exists, and only the preview candidate ever reads it.
+    private var handSwipeDetector = HandSwipeDetector()
+    private var fistToOpenDetector = FistToOpenDetector()
+    private var wristRotateDetector = WristRotateDetector()
+    private var twoFingerScrollDetector = TwoFingerScrollDetector()
 
     /// Task 19's perform-to-preview mode: `false` unless a `CardDetailView` preview strip is
     /// currently mounted (see `TacitEngine.isPreviewActive`). `previewTapDetector` /
-    /// `previewSwipeDetector` are SEPARATE instances from the production ones above so preview
-    /// state can never cross into or out of the arbitration path.
+    /// `previewSwipeDetector` (and the M3 Task 5 additions below) are SEPARATE instances from the
+    /// production ones above so preview state can never cross into or out of the arbitration path.
     private var previewActive = false
     private var previewTapDetector = PinchTapDetector()
     private var previewSwipeDetector = ThumbSwipeDetector()
+    /// M3 Task 5: preview-only counterparts of the four production detectors above, PLUS
+    /// `PinchDragDetector` — which, per plan ruling 2, exists ONLY here. `previewPinchDragDetector`
+    /// is never read anywhere but the preview branch of `process(_:_:)`, and its output never
+    /// reaches `arbitration` in any form.
+    private var previewHandSwipeDetector = HandSwipeDetector()
+    private var previewFistToOpenDetector = FistToOpenDetector()
+    private var previewWristRotateDetector = WristRotateDetector()
+    private var previewTwoFingerScrollDetector = TwoFingerScrollDetector()
+    private var previewPinchDragDetector = PinchDragDetector()
     /// Fix (post-Task-19 review): tap/swipe detectors only fire on the ONE frame a tap releases or
     /// a swipe's travel threshold is crossed — at ~15Hz that's a ~66ms candidate, invisible as a
     /// "light up." This latches that momentary candidate so `previewCandidate` keeps reporting it
@@ -754,24 +774,38 @@ private actor PipelineCore {
     /// itself — but even if it did, actor isolation would serialize it safely.
     ///
     /// Task 21 controller ruling (R2), production event precedence: `tapDetector`/`swipeDetector`
-    /// run on EVERY frame (unconditionally, not gated on `previewActive` or on arbitration state).
-    /// The static candidate is ingested into `arbitration.ingest` FIRST, exactly as before — the
-    /// clutch/disarm path must see every frame regardless of what a momentary detector does. THEN
-    /// a momentary candidate (`tap ?? swipe`, if either fired this frame) goes through the separate
+    /// (and, as of M3 Task 5, `handSwipeDetector`/`fistToOpenDetector`/`wristRotateDetector`/
+    /// `twoFingerScrollDetector`) run on EVERY frame (unconditionally, not gated on
+    /// `previewActive` or on arbitration state — each detector's own tracking has to keep evolving
+    /// through disarmed/arming frames). The static candidate is ingested into `arbitration.ingest`
+    /// FIRST, exactly as before — the clutch/disarm path must see every frame regardless of what a
+    /// momentary detector does. THEN a momentary candidate goes through the separate
     /// `arbitration.ingestPreDebounced` entry point (see that method's doc comment — momentary
     /// candidates are already self-debounced in time by their own detectors and could never
-    /// satisfy `ingest`'s 3-frame debounce). If BOTH return an event on the same frame, the
-    /// momentary one wins: it's what this function returns, and the static event is ledger-dropped
-    /// — `ingest`'s own bookkeeping (cooldown, window extension) for that static fire already
-    /// happened above and is never undone, only which `GestureEvent` is reported to `TacitEngine`
-    /// differs.
+    /// satisfy `ingest`'s 3-frame debounce).
     ///
-    /// When `previewActive`, this ALSO runs the frame through preview-scoped
-    /// `PinchTapDetector`/`ThumbSwipeDetector` instances, entirely independent of (and never
-    /// feeding into) `arbitration` — nothing below this point ever reads back into `arbitration` or
-    /// the production `candidate`/`event` values.
+    /// **Momentary precedence, first non-nil wins (identical order in production, preview, the
+    /// `PipelineIntegrationTests` `Harness`, and `NegativeSuiteTests.replayThroughFullChain` — keep
+    /// all four in lockstep):** tap > thumbSwipe > handSwipe > fistToOpen > rotate tick > scroll
+    /// tick. This is a plain `??` chain, so — same as the pre-M3 tap/swipe pair — a detector later
+    /// in the chain is simply never `ingest`ed on a frame where an earlier one already fired;
+    /// that's an accepted, established trade (a fire is a single frame, not an ongoing state) not
+    /// a new one introduced here. If a momentary candidate and the static debounce path BOTH
+    /// return an event on the same frame, the momentary one wins: it's what this function returns,
+    /// and the static event is ledger-dropped — `ingest`'s own bookkeeping (cooldown, window
+    /// extension) for that static fire already happened above and is never undone, only which
+    /// `GestureEvent` is reported to `TacitEngine` differs. Static classifier ingest ordering
+    /// itself (clutch first, then momentary via `ingestPreDebounced`) is unchanged from before M3.
     ///
-    /// `previewCandidate` precedence: a freshly-firing tap/swipe candidate this frame > an
+    /// When `previewActive`, this ALSO runs the frame through preview-scoped counterparts of all
+    /// six momentary detectors above, entirely independent of (and never feeding into)
+    /// `arbitration` — nothing below this point ever reads back into `arbitration` or the
+    /// production `candidate`/`event` values. The preview chain appends ONE more detector,
+    /// `previewPinchDragDetector`, LAST in precedence — `.pinchDrag` is preview-only (plan ruling
+    /// 2: unbindable in v1) and must never be reachable from the production chain at all, so it
+    /// has no production counterpart above and is added only here.
+    ///
+    /// `previewCandidate` precedence: a freshly-firing momentary candidate this frame > an
     /// unexpired latch from an earlier firing > the frame's own static `candidate`. A live static
     /// pose (held) is never masked by a stale (expired) latch — the latch is dropped the first
     /// frame it expires and the static candidate takes over immediately.
@@ -789,14 +823,27 @@ private actor PipelineCore {
         let candidate = frame.flatMap(classifier.classify)
         let staticEvent = arbitration.ingest(candidate, at: timestamp)
 
-        let momentary = frame.flatMap { tapDetector.ingest($0) ?? swipeDetector.ingest($0) }
+        let momentary = frame.flatMap {
+            tapDetector.ingest($0)
+                ?? swipeDetector.ingest($0)
+                ?? handSwipeDetector.ingest($0)
+                ?? fistToOpenDetector.ingest($0)
+                ?? wristRotateDetector.ingest($0)
+                ?? twoFingerScrollDetector.ingest($0)
+        }
         let preDebouncedEvent = momentary.flatMap { arbitration.ingestPreDebounced($0, at: timestamp) }
         let event = preDebouncedEvent ?? staticEvent
 
         var previewCandidate: GestureCandidate?
         if previewActive {
             if let frame {
-                let momentary = previewTapDetector.ingest(frame) ?? previewSwipeDetector.ingest(frame)
+                let momentary = previewTapDetector.ingest(frame)
+                    ?? previewSwipeDetector.ingest(frame)
+                    ?? previewHandSwipeDetector.ingest(frame)
+                    ?? previewFistToOpenDetector.ingest(frame)
+                    ?? previewWristRotateDetector.ingest(frame)
+                    ?? previewTwoFingerScrollDetector.ingest(frame)
+                    ?? previewPinchDragDetector.ingest(frame)
                 if let momentary {
                     previewLatch = (candidate: momentary, expiresAt: frame.timestamp + Self.previewLatchDuration)
                     previewCandidate = momentary
@@ -830,17 +877,24 @@ private actor PipelineCore {
         arbitration.reset()
     }
 
-    /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds both
-    /// preview detectors from scratch, so a freshly-opened card never inherits mid-gesture tracking
-    /// state (e.g. a half-completed swipe) left over from whichever card's preview ran before it.
-    /// The momentary-candidate latch is cleared on EITHER transition (on or off) so a lit tap/swipe
-    /// from one card's session never bleeds into the next.
+    /// Enables/disables Task 19's preview computation above. Turning it ON always rebuilds all
+    /// seven preview detectors (Task 19's original pair plus M3 Task 5's four dynamic detectors
+    /// and `previewPinchDragDetector`) from scratch, so a freshly-opened card never inherits
+    /// mid-gesture tracking state (e.g. a half-completed swipe or an in-progress rotation) left
+    /// over from whichever card's preview ran before it. The momentary-candidate latch is cleared
+    /// on EITHER transition (on or off) so a lit candidate from one card's session never bleeds
+    /// into the next.
     func setPreviewActive(_ active: Bool) {
         previewActive = active
         previewLatch = nil
         if active {
             previewTapDetector = PinchTapDetector()
             previewSwipeDetector = ThumbSwipeDetector()
+            previewHandSwipeDetector = HandSwipeDetector()
+            previewFistToOpenDetector = FistToOpenDetector()
+            previewWristRotateDetector = WristRotateDetector()
+            previewTwoFingerScrollDetector = TwoFingerScrollDetector()
+            previewPinchDragDetector = PinchDragDetector()
         }
     }
 }

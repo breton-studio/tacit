@@ -1,6 +1,58 @@
 import Foundation
 import TacitCore
 
+// MARK: - Shared synthetic-motion helpers
+//
+// Task 5 (M3 pipeline wiring) consolidated these here: `shift` originated in
+// `HandSwipeDetectorTests`, `rotate` in `RotateScrollDetectorTests` (each file had its own
+// `private` copy), and `PipelineIntegrationTests` needed both for its armed-swipe/armed-rotate
+// integration tests — a third call site made the duplication worth collapsing into one shared,
+// non-private home. Behavior is unchanged from the original `private` versions.
+
+/// Translates every present joint of `frame` by `(dx, dy)` and stamps it with timestamp `t`. This
+/// is how whole-hand-swipe motion paths are built from `SyntheticHand.openPalm()` /
+/// `.looseFist()` / `.threeFingerOpen()`: a rigid translation preserves every inter-joint
+/// distance, so palm size (wrist→middleMCP = 0.15) and the open/fisted/partial pose reads stay
+/// exactly what they were pre-translation — only the palm center moves.
+func shift(_ frame: LandmarkFrame, dx: Double, dy: Double, t: TimeInterval) -> LandmarkFrame {
+    var shifted = frame
+    for (joint, point) in shifted.joints {
+        shifted.joints[joint] = JointPoint(x: point.x + dx, y: point.y + dy, confidence: point.confidence)
+    }
+    shifted.timestamp = t
+    return shifted
+}
+
+/// Rotates every present joint of `frame` by `degrees` around the wrist (standard math
+/// convention: positive = counter-clockwise, using the y-up rotation matrix
+/// `(x', y') = (x cosθ - y sinθ, x sinθ + y cosθ)` applied to each joint's wrist-relative offset),
+/// and stamps it with timestamp `t`. Rotation is rigid, so it preserves every wrist-relative
+/// distance — palm size and the fisted/open finger-extension reads are unaffected; only the
+/// wrist→middleMCP vector's angle changes, by exactly `degrees`.
+func rotate(_ frame: LandmarkFrame, degrees: Double, t: TimeInterval) -> LandmarkFrame {
+    guard let wrist = frame.point(.wrist) else { return frame }
+    var rotated = frame
+    let theta = degrees * Double.pi / 180
+    let cosT = cos(theta)
+    let sinT = sin(theta)
+    for (joint, point) in frame.joints {
+        let dx = point.x - wrist.x
+        let dy = point.y - wrist.y
+        let newX = wrist.x + dx * cosT - dy * sinT
+        let newY = wrist.y + dx * sinT + dy * cosT
+        rotated.joints[joint] = JointPoint(x: newX, y: newY, confidence: point.confidence)
+    }
+    rotated.timestamp = t
+    return rotated
+}
+
+/// `frame` with `joint` deleted entirely, simulating a dropped/untracked joint for one frame.
+func droppingJoint(_ joint: HandJoint, from frame: LandmarkFrame) -> LandmarkFrame {
+    var dropped = frame
+    dropped.joints.removeValue(forKey: joint)
+    return dropped
+}
+
 /// Builds full 21-joint `LandmarkFrame`s for canonical poses, used by every recognition test.
 /// Test-target only: not part of TacitCore's public API.
 ///
@@ -124,6 +176,24 @@ enum SyntheticHand {
             // Open-palm spot (already set via extendedThumb above).
             joints[.thumbTip] = jp(0.28, 0.45)
         }
+        return frame(t: t, joints)
+    }
+
+    /// Index, middle, and little extended; ring curled (thumb extended, out of the way). Exactly
+    /// 3 of the 4 non-thumb fingers extended — enough to satisfy `HandSwipeDetector`'s "open-ish"
+    /// precondition (≥3 of 4), but deliberately NOT `openPalm` (which needs all 5, including
+    /// ring) and not any other `StaticPoseClassifier` pose either (not all 4 non-thumb curled for
+    /// `looseFist`; not "ring AND little both curled" for `victory`; not "only index extended"
+    /// for `indexPoint`). `classify(_:)` returns nil for this pose. Built for Task 5's armed
+    /// swipe integration test: a translated `openPalm` would read as `.openPalm` on every frame
+    /// and trip the arbitration engine's 3-consecutive-frame disarm debounce before the swipe's
+    /// travel threshold ever crosses — this pose lets `HandSwipeDetector` see genuine "open-ish"
+    /// motion while staying invisible to the static classifier and its disarm signal.
+    static func threeFingerOpen(t: TimeInterval = 0) -> LandmarkFrame {
+        var joints = extendedNonThumb
+        joints.merge(extendedThumb) { _, new in new }
+        joints.merge(fistedNonThumb.filter { $0.key == .ringMCP || $0.key == .ringPIP || $0.key == .ringDIP || $0.key == .ringTip }) { _, new in new }
+        joints[.wrist] = jp(0.5, 0.2)
         return frame(t: t, joints)
     }
 
