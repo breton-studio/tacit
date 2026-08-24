@@ -77,14 +77,14 @@ AVCaptureSession ──► CaptureEngine ──► HandPoseDetector ──► Ge
 
 ### 3.5 ActionDispatcher
 - `protocol TacitAction: Codable { func perform() async throws; var requiresAccessibility: Bool { get } }`
-- Four conformers: `KeystrokeAction` (CGEvent virtual key + modifier flags, posted to `.cghidEventTap`), `LaunchAppAction` (`NSWorkspace.openApplication`), `OpenURLAction` (any URL scheme, e.g. `superwhisper://record`), `RunShortcutAction` (`Process` → `shortcuts run "Name"`).
+- Four conformers: `KeystrokeAction` (CGEvent virtual key + modifier flags, posted to `.cghidEventTap`), `LaunchAppAction` (`NSWorkspace.openApplication`), `OpenURLAction` (any URL scheme, e.g. `superwhisper://record`), `RunShortcutAction` (`Process` → `shortcuts run "Name"`). Keystrokes come in three modes: *press* (down+up), *hold* (down while a holdable pose is held), and *toggle* (down on one fire, up on the next — a latch owned by the engine, released on any capture stop, quit, or rebind).
 - **This protocol is the App Store seam:** a future sandboxed target ships the same dispatcher minus `KeystrokeAction`.
 - Dispatch failures surface as HUD-level errors, never silent.
 
 ### 3.6 MappingStore
 - Observable; persisted as versioned JSON in `~/Library/Application Support/Tacit/mappings.json`.
 - Schema: `{ version, mappings: [gestureID: { enabled, action }] }` — flat now, trivially wrappable in named profiles later.
-- Ships with sensible defaults from the ergonomics report's example maps, all *disabled* except a starter set of five so first-run is calm: thumb-index tap → ⌘C, thumb-middle tap → ⌘V, victory → next tab (⌃Tab), thumbs-up → Return, thumb-swipe-on-index → undo/redo (⌘Z / ⇧⌘Z). Loose fist (clutch) and open palm (disarm) are reserved system gestures and cannot be bound.
+- Ships with sensible defaults from the ergonomics report's example maps, all *disabled* except the workhorse core so first-run is calm (defaults **revision 3**, 2026-08-24): thumb-index tap → ⌘C, thumb-middle tap → ⌘V, victory → ⌘Tab (app switch), thumbs-up → focus text input, thumb-swipe-on-index → undo/redo (⌘Z / ⇧⌘Z), index-point *hold* → Fn (push-to-talk dictation), thumb–ring/pinky tap → *toggle* Fn (hands-free dictation). Every dynamic gesture ships off. Default *values* are versioned separately from the wire format: a `DefaultsRevision` chain rewrites only bindings still exactly equal to the previous default. Loose fist (clutch) and open palm (disarm) are reserved system gestures and cannot be bound.
 
 ### 3.7 UI layer
 - **Menu bar** (`MenuBarExtra`): constellation glyph with four states — *paused* (hollow), *watching* (idle line-art), *armed* (accent-filled), *fired* (single brief pulse). Popover: master toggle, arm/disarm, "Pause for an hour," launch-at-login toggle, "Open Library," warning row (low light / permissions), quit.
