@@ -85,16 +85,27 @@ public final class MappingStore: ObservableObject {
     private let directory: URL
     private let fileURL: URL
 
-    /// - Parameter directory: where `mappings.json` lives. Defaults to
-    ///   `~/Library/Application Support/Tacit`; tests inject a temporary directory instead.
-    public init(directory: URL? = nil) {
+    /// Where the one-time workflow-defaults top-up (see `applyWorkflowDefaultsTopUpIfNeeded`)
+    /// records that it has already run. Injectable the same way `directory` is: production code
+    /// takes the default `.standard`, tests pass a private `UserDefaults(suiteName:)` so runs
+    /// never share state with each other or with a real installation.
+    private let userDefaults: UserDefaults
+
+    /// - Parameters:
+    ///   - directory: where `mappings.json` lives. Defaults to
+    ///     `~/Library/Application Support/Tacit`; tests inject a temporary directory instead.
+    ///   - userDefaults: backs the one-time workflow-defaults top-up flag
+    ///     (`workflowDefaultsAppliedKey`). Defaults to `.standard`; tests inject a private suite.
+    public init(directory: URL? = nil, userDefaults: UserDefaults = .standard) {
         let resolvedDirectory = directory ?? Self.defaultDirectory()
         self.directory = resolvedDirectory
         self.fileURL = resolvedDirectory.appendingPathComponent("mappings.json")
+        self.userDefaults = userDefaults
         self.bindings = Self.defaultBindings()
 
         try? FileManager.default.createDirectory(at: resolvedDirectory, withIntermediateDirectories: true)
         load()
+        applyWorkflowDefaultsTopUpIfNeeded()
     }
 
     private static func defaultDirectory() -> URL {
@@ -168,6 +179,71 @@ public final class MappingStore: ObservableObject {
         persist()
     }
 
+    /// UserDefaults key marking that the M3 Task 11 workflow-defaults top-up (below) has already
+    /// run for this install. Deliberately independent of `mappings.json`'s own `version` — this
+    /// is about which *default values* got applied on top of an existing file, not about the wire
+    /// format, so it lives in `UserDefaults` (via the injectable `userDefaults`) rather than in
+    /// the mappings file itself.
+    private static let workflowDefaultsAppliedKey = "tacit.workflowDefaultsApplied"
+
+    /// The three gestures the M3 Task 11 top-up applies new enabled defaults to. Order matches
+    /// where they're introduced in `defaultBindings()`.
+    private static let workflowDefaultTopUpIDs: [GestureID] = [.swipeRight, .swipeUp, .indexPoint]
+
+    /// What each of `workflowDefaultTopUpIDs` suggested — disabled — *before* this task. A
+    /// pre-Task-11 install's `mappings.json` shows exactly this for one of these gestures if the
+    /// user never touched it. This table exists solely so `applyWorkflowDefaultsTopUpIfNeeded`
+    /// can tell "still on the old suggestion" apart from "user rebound this while it was
+    /// disabled" — `defaultBindings()` above already reflects the NEW (enabled) defaults, not
+    /// these.
+    private static let oldSuggestedDefaultActions: [GestureID: TacitAction?] = [
+        .swipeRight: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])), // ⌃→
+        .swipeUp: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])), // ⌃↑ Mission Control
+        .indexPoint: nil, // no discrete keystroke suggested pre-Task-11
+    ]
+
+    /// One-time top-up for EXISTING users (M3 Task 11, user requirement): applies the new enabled
+    /// workflow defaults — app-switch (`swipeRight`), focus-input (`swipeUp`), and hold-to-dictate
+    /// (`indexPoint`) — to any of those three gestures the user never customized, then marks the
+    /// top-up done via `userDefaults` so it never runs again. Runs unconditionally at the end of
+    /// `init`, after `load()` has settled `bindings` (fresh defaults, a migrated v1 file, a
+    /// corruption-recovered default set, or a normal v2 load all land here the same way).
+    ///
+    /// A fresh install is a no-op here: `defaultBindings()` already enables all three, so every
+    /// one of them reads as "customized" below (because `enabled` is already `true`) — nothing to
+    /// top up, just the flag gets set. The top-up only changes behavior for an existing
+    /// `mappings.json` written before this task shipped.
+    ///
+    /// **"Customized" predicate** (meaning: leave this gesture alone) for a given gesture's
+    /// current binding — either of:
+    ///   - `enabled == true` — the user has this gesture live at all, even if it happens to still
+    ///     point at the exact old suggested action; turning it on is itself a deliberate choice.
+    ///   - `action` differs from that gesture's entry in `oldSuggestedDefaultActions` — the user
+    ///     rebound it to something else (or cleared it) while it was still disabled.
+    ///
+    /// Anything else — disabled, and sitting on exactly the old suggested (or, for `indexPoint`,
+    /// the old `nil`) action — is the "never touched this" state, and gets replaced with the new
+    /// enabled default from `defaultBindings()`.
+    private func applyWorkflowDefaultsTopUpIfNeeded() {
+        guard !userDefaults.bool(forKey: Self.workflowDefaultsAppliedKey) else { return }
+
+        let newDefaults = Self.defaultBindings()
+        var didChange = false
+        for id in Self.workflowDefaultTopUpIDs {
+            let current = binding(for: id)
+            let oldSuggestedAction = Self.oldSuggestedDefaultActions[id] ?? nil
+            let isCustomized = current.enabled || current.action != oldSuggestedAction
+            guard !isCustomized, let newDefault = newDefaults[id] else { continue }
+            bindings[id] = newDefault
+            didChange = true
+        }
+
+        if didChange {
+            persist()
+        }
+        userDefaults.set(true, forKey: Self.workflowDefaultsAppliedKey)
+    }
+
     /// The binding for `id`, or a sensible disabled default (no action) if none is stored yet.
     public func binding(for id: GestureID) -> GestureBinding {
         bindings[id] ?? GestureBinding(enabled: false, action: nil)
@@ -188,9 +264,9 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6): six enabled user commands, the two reserved
-    /// clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for continuous
-    /// gestures with no discrete action yet) for everything else.
+    /// The factory bindings (spec §3.6, plus M3 Task 11's workflow trio): nine enabled user
+    /// commands, the two reserved clutch/disarm gestures, and sensible-but-disabled suggestions
+    /// (or `nil`, for continuous gestures with no discrete action yet) for everything else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
@@ -214,21 +290,27 @@ public final class MappingStore: ObservableObject {
             enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command, .shift])) // ⇧⌘Z
         )
 
+        // Enabled — M3 Task 11's workflow defaults (user requirement): everyday app-switching,
+        // text-field focus, and hold-to-dictate, ready to use on a fresh install without any
+        // configuration. See `workflowDefaultTopUpIDs`/`oldSuggestedDefaultActions` below for how
+        // existing users get these applied too, without disturbing anything they've customized.
+        bindings[.swipeRight] = GestureBinding(
+            enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command])) // ⌘Tab
+        )
+        bindings[.swipeUp] = GestureBinding(enabled: true, action: .focusTextInput)
+        bindings[.indexPoint] = GestureBinding(
+            // Fn (keyCode 63) — Wispr Flow's stock hold-to-dictate hotkey.
+            enabled: true, action: .holdKeystroke(KeyChord(keyCode: 63, modifiers: []))
+        )
+
         // Reserved — always enabled, never bindable, no action (the system owns these).
         bindings[.looseFist] = GestureBinding(enabled: true, action: nil)
         bindings[.openPalm] = GestureBinding(enabled: true, action: nil)
 
         // Disabled, with a suggested action from the ergonomics report's mapping column.
-        bindings[.indexPoint] = GestureBinding(enabled: false, action: nil) // "activate" — no discrete keystroke yet
         bindings[.thumbRingPinkyTap] = GestureBinding(enabled: false, action: nil) // rarer command, undecided
         bindings[.swipeLeft] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control])) // ⌃←
-        )
-        bindings[.swipeRight] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])) // ⌃→
-        )
-        bindings[.swipeUp] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])) // ⌃↑ Mission Control
         )
         bindings[.swipeDown] = GestureBinding(
             enabled: false, action: .keystroke(KeyChord(keyCode: 125, modifiers: [.control])) // ⌃↓ App Exposé

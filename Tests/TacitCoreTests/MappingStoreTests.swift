@@ -8,10 +8,19 @@ private func makeTempDirectory() -> URL {
     return dir
 }
 
+/// A private `UserDefaults` suite, unique per call — mirrors `makeTempDirectory()`'s isolation
+/// pattern so the workflow-defaults top-up flag (`MappingStore`'s injectable `userDefaults:`
+/// parameter) never leaks state between tests or into a real `.standard` domain.
+private func makeTempUserDefaults() -> UserDefaults {
+    UserDefaults(suiteName: "TacitMappingStoreTests-flags-\(UUID().uuidString)")!
+}
+
+private let workflowDefaultsAppliedKey = "tacit.workflowDefaultsApplied"
+
 // MARK: - First launch defaults
 
 @MainActor
-@Test func firstLaunchHasExactlySixEnabledUserBindings() {
+@Test func firstLaunchHasTheSixWorkhorseUserBindingsEnabled() {
     let store = MappingStore(directory: makeTempDirectory())
 
     #expect(store.binding(for: .thumbIndexTap) ==
@@ -28,6 +37,20 @@ private func makeTempDirectory() -> URL {
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command, .shift]))))
 }
 
+/// M3 Task 11 (user requirement): app-switch, focus-input, and hold-to-dictate ship enabled on a
+/// fresh install, no configuration needed.
+@MainActor
+@Test func firstLaunchHasTheWorkflowDefaultsTrioEnabled() {
+    let store = MappingStore(directory: makeTempDirectory())
+
+    #expect(store.binding(for: .swipeRight) ==
+        GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.command])))) // ⌘Tab
+    #expect(store.binding(for: .swipeUp) ==
+        GestureBinding(enabled: true, action: .focusTextInput))
+    #expect(store.binding(for: .indexPoint) ==
+        GestureBinding(enabled: true, action: .holdKeystroke(KeyChord(keyCode: 63, modifiers: [])))) // Fn
+}
+
 @MainActor
 @Test func firstLaunchReservedGesturesAreEnabledWithNilAction() {
     let store = MappingStore(directory: makeTempDirectory())
@@ -36,11 +59,12 @@ private func makeTempDirectory() -> URL {
 }
 
 @MainActor
-@Test func firstLaunchOnlyTheSixUserBindingsAndTwoReservedAreEnabled() {
+@Test func firstLaunchOnlyTheNineUserBindingsAndTwoReservedAreEnabled() {
     let store = MappingStore(directory: makeTempDirectory())
     let enabledIDs = Set(GestureID.allCases.filter { store.binding(for: $0).enabled })
     let expected: Set<GestureID> = [
         .thumbIndexTap, .thumbMiddleTap, .victory, .thumbsUp, .thumbSwipeBackward, .thumbSwipeForward,
+        .swipeRight, .swipeUp, .indexPoint,
         .looseFist, .openPalm,
     ]
     #expect(enabledIDs == expected)
@@ -107,6 +131,94 @@ private func makeTempDirectory() -> URL {
     let binding = GestureBinding(enabled: true, action: action)
 
     #expect(binding.enableRequest(false) == .update(GestureBinding(enabled: false, action: action)))
+}
+
+// MARK: - Workflow defaults one-time top-up (M3 Task 11)
+
+/// Mirrors `MappingStore`'s own private `MappingsFile` v2 wire shape, keyed by raw `String`
+/// (matching `V1MappingsFile` above's pattern) so a hand-built v2 fixture — an "existing user"
+/// snapshot from before this task shipped — can be written directly to disk.
+private struct V2MappingsFile: Codable {
+    var version: Int
+    var bindings: [String: GestureBinding]
+}
+
+@MainActor
+@Test func topUpAppliesAllThreeDefaultsOnAFreshStoreWithNoExistingFile() {
+    // A fresh install never wrote a mappings.json at all — `defaultBindings()` already has the
+    // new enabled trio baked in, so the top-up is a no-op here, but it still needs to leave that
+    // trio enabled (not accidentally revert them) and set the flag.
+    let flags = makeTempUserDefaults()
+    let store = MappingStore(directory: makeTempDirectory(), userDefaults: flags)
+
+    #expect(store.binding(for: .swipeRight).enabled == true)
+    #expect(store.binding(for: .swipeUp).enabled == true)
+    #expect(store.binding(for: .indexPoint).enabled == true)
+    #expect(flags.bool(forKey: workflowDefaultsAppliedKey) == true)
+}
+
+/// The core top-up scenario: an existing user's `mappings.json` (written before this task) has
+/// `swipeRight` deliberately customized — enabled, rebound to ⌃← — while `swipeUp` and
+/// `indexPoint` still sit exactly on their old disabled suggested defaults, i.e. never touched.
+/// Loading it for the first time under the new code must preserve the customized `swipeRight`
+/// binding untouched, top up the other two to the new enabled defaults, and set the flag.
+@MainActor
+@Test func topUpKeepsACustomizedGestureAndToppsUpTheUntouchedOthers() throws {
+    let dir = makeTempDirectory()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fileURL = dir.appendingPathComponent("mappings.json")
+
+    let customizedSwipeRight = GestureBinding(
+        enabled: true, action: .keystroke(KeyChord(keyCode: 123, modifiers: [.control])) // user's own ⌃←
+    )
+    let oldSuggestedSwipeUp = GestureBinding(
+        enabled: false, action: .keystroke(KeyChord(keyCode: 126, modifiers: [.control])) // pre-Task-11 ⌃↑
+    )
+    let oldSuggestedIndexPoint = GestureBinding(enabled: false, action: nil) // pre-Task-11: unbound
+
+    let existingFile = V2MappingsFile(version: 2, bindings: [
+        "swipeRight": customizedSwipeRight,
+        "swipeUp": oldSuggestedSwipeUp,
+        "indexPoint": oldSuggestedIndexPoint,
+    ])
+    try JSONEncoder().encode(existingFile).write(to: fileURL)
+
+    let flags = makeTempUserDefaults()
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    // The user's own binding survives exactly as they left it.
+    #expect(store.binding(for: .swipeRight) == customizedSwipeRight)
+
+    // The two untouched gestures are topped up to the new enabled defaults.
+    #expect(store.binding(for: .swipeUp) == GestureBinding(enabled: true, action: .focusTextInput))
+    #expect(store.binding(for: .indexPoint) ==
+        GestureBinding(enabled: true, action: .holdKeystroke(KeyChord(keyCode: 63, modifiers: []))))
+
+    // The flag is set, and the topped-up bindings were actually persisted to disk.
+    #expect(flags.bool(forKey: workflowDefaultsAppliedKey) == true)
+    let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
+    #expect(onDisk.bindings["swipeRight"] == customizedSwipeRight)
+    #expect(onDisk.bindings["swipeUp"] == GestureBinding(enabled: true, action: .focusTextInput))
+}
+
+/// Once the top-up has run (flag set), it must never run again — even if the user later disables
+/// one of the topped-up gestures, a subsequent load must not silently re-enable it.
+@MainActor
+@Test func topUpNeverReappliesOnceTheFlagIsSet() {
+    let dir = makeTempDirectory()
+    let flags = makeTempUserDefaults()
+
+    // First launch: fresh install, top-up runs (as a no-op, since defaults are already enabled)
+    // and sets the flag.
+    let store1 = MappingStore(directory: dir, userDefaults: flags)
+    #expect(store1.binding(for: .swipeUp).enabled == true)
+
+    // The user turns swipeUp back off.
+    store1.setBinding(GestureBinding(enabled: false, action: .focusTextInput), for: .swipeUp)
+
+    // A later load — flag already set — must leave that alone rather than re-topping it up.
+    let store2 = MappingStore(directory: dir, userDefaults: flags)
+    #expect(store2.binding(for: .swipeUp).enabled == false)
 }
 
 // MARK: - Reserved gestures are never bindable

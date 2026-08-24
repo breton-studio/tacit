@@ -100,8 +100,7 @@ public enum GestureCatalog {
             kind: .staticPose,
             comfort: "Low fatigue",
             falsePositiveRisk: "Low–Medium",
-            editorial: "A loose point rates as comfortable in the posture research and reads "
-                + "reliably as one of the camera's built-in pose classes.",
+            editorial: "Point to speak: hold to dictate, release to stop.",
             isReserved: false
         ),
         CatalogEntry(
@@ -203,8 +202,7 @@ public enum GestureCatalog {
             kind: .dynamic,
             comfort: "Low–Moderate fatigue",
             falsePositiveRisk: "Low",
-            editorial: "The mirror of swipe left — a paired directional idiom that reads as one "
-                + "learnable pattern rather than two separate gestures.",
+            editorial: "Switch apps with a flick to the right.",
             isReserved: false
         ),
         CatalogEntry(
@@ -214,8 +212,7 @@ public enum GestureCatalog {
             kind: .dynamic,
             comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
-            editorial: "A larger flick than the horizontal swipes, so it costs a bit more effort — "
-                + "appropriate for an occasional rather than a high-frequency command.",
+            editorial: "Swipe up into the text field.",
             isReserved: false
         ),
         CatalogEntry(

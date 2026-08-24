@@ -42,7 +42,10 @@ public enum TacitAction: Codable, Equatable, Sendable {
     public var summary: String {
         switch self {
         case .keystroke(let chord): chord.display
-        case .holdKeystroke(let chord): "Hold " + (chord.keyCode == 63 ? "Fn" : chord.display)
+        // `KeyChord.capNames` maps keyCode 63 to "Fn", so the default hold-to-dictate binding
+        // (`.holdKeystroke(KeyChord(keyCode: 63, ...))`) reads as "Hold Fn" via plain `.display` —
+        // no special case needed here.
+        case .holdKeystroke(let chord): "Hold " + chord.display
         case .launchApp(_, let displayName): "Open \(displayName)"
         case .openURL(let string): string
         case .runShortcut(let name): "Shortcut: \(name)"

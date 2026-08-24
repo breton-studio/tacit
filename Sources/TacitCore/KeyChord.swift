@@ -42,8 +42,11 @@ public struct KeyChord: Codable, Equatable, Sendable {
     }
 
     /// Carbon virtual keycode → key cap name, covering letters A–Z, digits 0–9, and the named
-    /// keys the app needs to display (Return, Tab, Space, Delete, Escape, arrows). Copied from
-    /// the standard US ANSI `kVK_*` layout.
+    /// keys the app needs to display (Return, Tab, Space, Delete, Escape, arrows, Fn). Copied from
+    /// the standard US ANSI `kVK_*` layout. `63` ("Fn") is `kVK_Function` — the key Wispr Flow uses
+    /// as its stock hold-to-dictate hotkey, and the default `.holdKeystroke` binding for
+    /// `.indexPoint` (see `MappingStore.defaultBindings`), so `TacitAction.summary` can render
+    /// "Hold Fn" via plain `chord.display` rather than a special case.
     static let capNames: [UInt16: String] = [
         0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
         34: "I", 38: "J", 40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P",
@@ -53,5 +56,6 @@ public struct KeyChord: Codable, Equatable, Sendable {
         25: "9", 29: "0",
         36: "Return", 48: "Tab", 49: "Space", 51: "Delete", 53: "Escape",
         123: "Left", 124: "Right", 125: "Down", 126: "Up",
+        63: "Fn",
     ]
 }

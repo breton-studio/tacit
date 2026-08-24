@@ -95,8 +95,9 @@ struct CardDetailView: View {
 
     // MARK: - Action binder (Task 18)
 
-    /// The four-way action binder (spec §5: "keystroke recorder, app picker, URL field with
-    /// validation, Shortcut picker") — `ActionBinderView` in `ActionBinders.swift`. Hidden
+    /// The action binder (spec §5: "keystroke recorder, app picker, URL field with
+    /// validation, Shortcut picker"; M3 Task 10 added a fifth segment, focus-input) —
+    /// `ActionBinderView` in `ActionBinders.swift`. Hidden
     /// entirely for reserved entries: `looseFist`/`openPalm` are never user-bindable
     /// (`MappingStore.setBinding` no-ops for them too), and `bindingLine` above already shows
     /// their reserved copy ("Reserved — arms Tacit" / "Reserved — disarms"), so this section would

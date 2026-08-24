@@ -38,6 +38,14 @@ import Testing
     #expect(KeyChord(keyCode: 126, modifiers: []).display == "Up")
 }
 
+/// M3 Task 11: keyCode 63 (`kVK_Function`) is the Fn key — Wispr Flow's stock hold-to-dictate
+/// hotkey, and the default `.holdKeystroke` binding for `.indexPoint`
+/// (`MappingStore.defaultBindings`). `TacitAction.summary` relies on this rendering as "Fn" via
+/// plain `chord.display` rather than a special case, so a summary reads "Hold Fn".
+@Test func displayRendersFnKey() {
+    #expect(KeyChord(keyCode: 63, modifiers: []).display == "Fn")
+}
+
 @Test func displayRendersDigits() {
     #expect(KeyChord(keyCode: 18, modifiers: []).display == "1")
     #expect(KeyChord(keyCode: 29, modifiers: []).display == "0")

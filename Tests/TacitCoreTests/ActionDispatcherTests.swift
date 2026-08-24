@@ -223,7 +223,9 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     spy.postKeyDownResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
     let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
-    #expect(outcome == .failed("Couldn't press key 0x3F"))
+    // M3 Task 11: keyCode 63 now has a cap name ("Fn") in `KeyChord.capNames`, so the failure
+    // message reads the key's name rather than its raw hex code.
+    #expect(outcome == .failed("Couldn't press Fn"))
     // The up half is never attempted once the down half itself failed.
     #expect(spy.postKeyUpCalls.isEmpty)
 }
@@ -233,7 +235,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     spy.postKeyUpResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
     let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
-    #expect(outcome == .failed("Couldn't press key 0x3F"))
+    #expect(outcome == .failed("Couldn't press Fn"))
     #expect(spy.postKeyDownCalls == [chord])
 }
 
