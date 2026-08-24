@@ -27,8 +27,10 @@ Produces `build/Tacit.app`, signed with your stable Apple Development (or Develo
 Launch `build/Tacit.app`, or run it straight from Xcode/`swift run` during development. Tacit
 requests camera permission at launch, alongside a short first-run onboarding: Accessibility
 permission, learning the clutch, and a look at the preset gesture bindings you start with — among
-them the workflow defaults: hand swipes flip apps: right/down → next, left/up → previous, directly
-(no ⌘Tab, no switcher UI), a thumbs-up focuses the nearest text field, holding a point gesture holds
+them the workflow defaults: tilt your open palm left/right to flip apps — lean right → next, lean
+left → previous, directly (no ⌘Tab, no switcher UI; the hand swipes still recognize but ship off,
+since they weren't being detected reliably for everyone), a thumbs-up focuses the nearest text
+field, holding a point gesture holds
 down Fn — Wispr Flow's stock push-to-talk hotkey — and a victory (✌️) sign *toggles* Fn for
 hands-free dictation until you make it again (the menu bar popover shows a "Release" row while it's
 held). Copy, paste, undo and redo ride the thumb taps and thumb swipes. Everything else ships off;

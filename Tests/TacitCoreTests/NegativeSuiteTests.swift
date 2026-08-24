@@ -76,8 +76,8 @@ struct NegativeSuiteTests {
     ///
     /// 1. The static classifier's candidate goes to `engine.ingest` first, unconditionally — the
     ///    clutch/disarm path, exactly as before.
-    /// 2. A momentary candidate — **tap > thumbSwipe > handSwipe > fistToOpen > rotate tick >
-    ///    scroll tick** (first non-nil wins; identical order to `PipelineCore.process` and
+    /// 2. A momentary candidate — **tap > thumbSwipe > palmTilt > handSwipe > fistToOpen > rotate
+    ///    tick > scroll tick** (first non-nil wins; identical order to `PipelineCore.process` and
     ///    `Harness` — keep all three in lockstep) — goes through `engine.ingestPreDebounced`
     ///    separately. `PinchDragDetector` is deliberately absent: it's preview-only (plan ruling
     ///    2) and never appears in any production/negative-suite chain.
@@ -93,6 +93,7 @@ struct NegativeSuiteTests {
         let classifier = StaticPoseClassifier()
         var tapDetector = PinchTapDetector()
         var swipeDetector = ThumbSwipeDetector()
+        var palmTiltDetector = PalmTiltDetector()
         var handSwipeDetector = HandSwipeDetector()
         var fistToOpenDetector = FistToOpenDetector()
         var wristRotateDetector = WristRotateDetector()
@@ -107,6 +108,7 @@ struct NegativeSuiteTests {
 
             let momentaryCandidate = tapDetector.ingest(frame)
                 ?? swipeDetector.ingest(frame)
+                ?? palmTiltDetector.ingest(frame)
                 ?? handSwipeDetector.ingest(frame)
                 ?? fistToOpenDetector.ingest(frame)
                 ?? wristRotateDetector.ingest(frame)
@@ -426,6 +428,7 @@ struct NegativeSuiteTests {
                 let classifier = StaticPoseClassifier()
                 var tapDetector = PinchTapDetector()
                 var swipeDetector = ThumbSwipeDetector()
+                var palmTiltDetector = PalmTiltDetector()
                 var handSwipeDetector = HandSwipeDetector()
                 var fistToOpenDetector = FistToOpenDetector()
                 var wristRotateDetector = WristRotateDetector()
@@ -439,6 +442,7 @@ struct NegativeSuiteTests {
                     let staticEvent = engine.ingest(poseCandidate, at: frame.timestamp)
                     let momentaryCandidate = tapDetector.ingest(frame)
                         ?? swipeDetector.ingest(frame)
+                        ?? palmTiltDetector.ingest(frame)
                         ?? handSwipeDetector.ingest(frame)
                         ?? fistToOpenDetector.ingest(frame)
                         ?? wristRotateDetector.ingest(frame)

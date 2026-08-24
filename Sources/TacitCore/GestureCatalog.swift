@@ -84,10 +84,12 @@ public struct CatalogEntry: Sendable {
 /// metadata (comfort, false-positive risk, tier) and the quiet prose that explains why it belongs
 /// where it does. Sourced entirely from `docs/research/LowFatigue-Economic-Hand-Gestures.md`.
 public enum GestureCatalog {
-    /// All 23 gestures, in spec §5 order: the eight static workhorses followed by the thumb-swipe
+    /// All 25 gestures, in spec §5 order: the eight static workhorses followed by the thumb-swipe
     /// pair (report gesture #9, split into two `GestureID`s), then occasional 10–17 with the
     /// wrist-rotate and two-finger-scroll gestures each split into a directional pair (the same
-    /// precedent as the #9 thumb-swipe split), then the three deliberate free-air gestures.
+    /// precedent as the #9 thumb-swipe split), plus the 2026-08-24 palm-tilt pair (the app-switch
+    /// job's replacement for the hand swipes, which stay in the catalog but ship disabled — see
+    /// `MappingStore` defaults revision 7), then the three deliberate free-air gestures.
     public static let entries: [CatalogEntry] = [
         // MARK: Workhorses (report gestures 1–8, plus the #9 thumb-swipe pair)
         CatalogEntry(
@@ -337,6 +339,33 @@ public enum GestureCatalog {
             isReserved: false,
             hint: "Move two extended fingers downward together, steady and slow — pace, not "
                 + "distance, drives the scroll."
+        ),
+
+        CatalogEntry(
+            id: .palmTiltLeft,
+            displayName: "Palm Tilt Left",
+            tier: .occasional,
+            kind: .dynamic,
+            comfort: "Low fatigue",
+            falsePositiveRisk: "Low",
+            editorial: "A quarter-turn of an already-open hand — like turning a page. Replaces the "
+                + "whole-hand swipe for app-switching, which was going undetected for enough users "
+                + "to retire it.",
+            isReserved: false,
+            hint: "Show your open palm, then lean the fingers to the left about a quarter turn — "
+                + "come back upright before the next one."
+        ),
+        CatalogEntry(
+            id: .palmTiltRight,
+            displayName: "Palm Tilt Right",
+            tier: .occasional,
+            kind: .dynamic,
+            comfort: "Low fatigue",
+            falsePositiveRisk: "Low",
+            editorial: "The mirror of the left tilt — the same quarter-turn, the other way.",
+            isReserved: false,
+            hint: "Show your open palm, then lean the fingers to the right about a quarter turn — "
+                + "come back upright before the next one."
         ),
 
         // MARK: Deliberate (report gestures 18–20)

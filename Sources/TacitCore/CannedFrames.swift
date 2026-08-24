@@ -82,6 +82,23 @@ public enum CannedFrames {
 
     private static let wristPivot = (x: 0.5, y: 0.2)
 
+    /// Rotates every joint of `frame` about its own wrist by `degrees`, keeping the wrist itself
+    /// fixed — the palm-tilt canned frames are derived from `openPalm` this way rather than
+    /// hand-tuned from scratch, so they can never drift out of sync with the base open-palm
+    /// geometry. Uses the same rotation convention as `transformed`/`PalmTiltDetector`/
+    /// `Tests/TacitCoreTests/SyntheticHand.swift`'s `rotate` helper (standard math, y-up: positive
+    /// `degrees` is counter-clockwise, which swings the wrist→middleMCP vector toward decreasing x
+    /// — the user's left, per `PalmTiltDetector`'s roll convention — so `degrees: 30` yields
+    /// `.palmTiltLeft`'s frame and `degrees: -30` yields `.palmTiltRight`'s).
+    private static func rotatedAboutWrist(_ frame: LandmarkFrame, degrees: Double) -> LandmarkFrame {
+        let wrist = frame.point(.wrist) ?? JointPoint(x: 0.5, y: 0.2, confidence: 0.9)
+        var nonWristJoints = frame.joints
+        nonWristJoints.removeValue(forKey: .wrist)
+        var rotatedJoints = transformed(nonWristJoints, pivot: (x: wrist.x, y: wrist.y), rotationDegrees: degrees)
+        rotatedJoints[.wrist] = wrist
+        return LandmarkFrame(timestamp: frame.timestamp, joints: rotatedJoints, handedness: frame.handedness)
+    }
+
     // MARK: - Shared finger chains (mirrors SyntheticHand's construction style)
 
     private static var extendedNonThumb: [HandJoint: JointPoint] {
@@ -279,6 +296,13 @@ public enum CannedFrames {
     public static let twoFingerScrollDown: LandmarkFrame =
         assemble(withScrollTipOffset(-0.05), fistedThumb)
 
+    /// The open-palm pose leaned toward the user's left — `openPalm` rotated 30° about the wrist.
+    /// See `rotatedAboutWrist`'s doc comment for why +30° (not −30°) yields the left tilt.
+    public static let palmTiltLeft: LandmarkFrame = rotatedAboutWrist(openPalm, degrees: 30)
+
+    /// The mirrored lean, toward the user's right.
+    public static let palmTiltRight: LandmarkFrame = rotatedAboutWrist(openPalm, degrees: -30)
+
     // MARK: - Deliberate (report gestures 18–20)
 
     /// The open-palm pose enlarged about the wrist — a palm pushed forward, filling more of the
@@ -327,6 +351,8 @@ public enum CannedFrames {
         case .wristRotateCCW: wristRotateCCW
         case .twoFingerScrollUp: twoFingerScrollUp
         case .twoFingerScrollDown: twoFingerScrollDown
+        case .palmTiltLeft: palmTiltLeft
+        case .palmTiltRight: palmTiltRight
         case .palmPush: palmPush
         case .wave: wave
         case .twoHandFrame: twoHandFrame

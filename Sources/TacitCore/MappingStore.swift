@@ -209,7 +209,7 @@ public final class MappingStore: ObservableObject {
 
     /// The revision `defaultBindings()` currently represents. Bump it and append a
     /// `DefaultsRevision` whenever a default VALUE changes for existing users.
-    public static let currentDefaultsRevision = 6
+    public static let currentDefaultsRevision = 7
 
     /// `UserDefaults` key holding the revision an install has been topped up to (Int).
     static let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -312,6 +312,40 @@ public final class MappingStore: ObservableObject {
                 new: GestureBinding(enabled: true, action: .switchApp(.next))
             ),
         ]),
+        // 2026-08-24 product ruling ("whole-hand swipes aren't being detected for them, replace
+        // them as the app-switch gestures with open palm, tilted left/right"): the app-switch job
+        // moves off the four hand swipes onto the new palm-tilt pair. The swipes stay recognized
+        // and bindable — they simply ship disabled, keeping the exact `.switchApp` suggestion they
+        // carried as their rev-6 enabled value, so a user who re-enables one gets back precisely
+        // what it used to do. `palmTiltRight`/`palmTiltLeft` pick up the same next/previous split
+        // the swipes used: right (a rightward lean, mirroring swipeRight/swipeDown) moves forward,
+        // left mirrors swipeLeft/swipeUp moving backward.
+        DefaultsRevision(revision: 7, changes: [
+            .swipeRight: (
+                old: GestureBinding(enabled: true, action: .switchApp(.next)),
+                new: GestureBinding(enabled: false, action: .switchApp(.next))
+            ),
+            .swipeLeft: (
+                old: GestureBinding(enabled: true, action: .switchApp(.previous)),
+                new: GestureBinding(enabled: false, action: .switchApp(.previous))
+            ),
+            .swipeUp: (
+                old: GestureBinding(enabled: true, action: .switchApp(.previous)),
+                new: GestureBinding(enabled: false, action: .switchApp(.previous))
+            ),
+            .swipeDown: (
+                old: GestureBinding(enabled: true, action: .switchApp(.next)),
+                new: GestureBinding(enabled: false, action: .switchApp(.next))
+            ),
+            .palmTiltRight: (
+                old: GestureBinding(enabled: false, action: nil),
+                new: GestureBinding(enabled: true, action: .switchApp(.next))
+            ),
+            .palmTiltLeft: (
+                old: GestureBinding(enabled: false, action: nil),
+                new: GestureBinding(enabled: true, action: .switchApp(.previous))
+            ),
+        ]),
     ]
 
     /// The revision this install was last topped up to: the Int key if present; else 2 if the
@@ -369,11 +403,13 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6, defaults revision 6 — the 2026-08-24 "all four hand
-    /// swipes switch apps" ruling on top of the ring/pinky-tap-overlap ruling, the app-switch
-    /// ruling, and the workhorse remap): eleven enabled user commands, the two reserved
-    /// clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for continuous
-    /// gestures with no discrete action yet) for everything else.
+    /// The factory bindings (spec §3.6, defaults revision 7 — the 2026-08-24 "replace the hand
+    /// swipes with a palm tilt for app-switching" ruling on top of the "all four hand swipes
+    /// switch apps" ruling, the ring/pinky-tap-overlap ruling, the app-switch ruling, and the
+    /// workhorse remap): nine enabled user commands (down from eleven — the four hand swipes move
+    /// to disabled, replaced by the two-gesture palm-tilt pair), the two reserved clutch/disarm
+    /// gestures, and sensible-but-disabled suggestions (or `nil`, for continuous gestures with no
+    /// discrete action yet) for everything else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
@@ -416,17 +452,23 @@ public final class MappingStore: ObservableObject {
         bindings[.looseFist] = GestureBinding(enabled: true, action: nil)
         bindings[.openPalm] = GestureBinding(enabled: true, action: nil)
 
-        // Enabled — defaults revision 4 (2026-08-24, "flip through apps with one gesture,
-        // right/left, never summon the app switcher"), extended by defaults revision 6
-        // (2026-08-24, "all four hand swipes move between apps in their direction"): every hand
-        // swipe activates the next/previous app DIRECTLY via `NSRunningApplication.activate` —
-        // never posts ⌘Tab, never shows the system switcher. The app order is 1-D (the ⌘Tab
-        // strip), so each swipe's on-screen direction maps to its motion through that strip:
-        // swipe right/down move forward (`.next`), swipe left/up move backward (`.previous`).
-        bindings[.swipeRight] = GestureBinding(enabled: true, action: .switchApp(.next))
-        bindings[.swipeLeft] = GestureBinding(enabled: true, action: .switchApp(.previous))
-        bindings[.swipeDown] = GestureBinding(enabled: true, action: .switchApp(.next))
-        bindings[.swipeUp] = GestureBinding(enabled: true, action: .switchApp(.previous))
+        // Enabled — defaults revision 7 (2026-08-24, "turn the open hand left or right" replaces
+        // the hand swipes for app-switching, since the swipes weren't being detected reliably):
+        // the palm tilt activates the next/previous app DIRECTLY via `NSRunningApplication.activate`
+        // — never posts ⌘Tab, never shows the system switcher. One tilt = one app. The app order
+        // is 1-D (the ⌘Tab strip): a rightward lean (mirroring the old swipeRight/swipeDown
+        // defaults) moves forward (`.next`); a leftward lean (mirroring swipeLeft/swipeUp) moves
+        // backward (`.previous`).
+        bindings[.palmTiltRight] = GestureBinding(enabled: true, action: .switchApp(.next))
+        bindings[.palmTiltLeft] = GestureBinding(enabled: true, action: .switchApp(.previous))
+
+        // Disabled, with suggested actions — defaults revision 7: the hand swipes ship off (they
+        // weren't being detected for everyone), but keep the exact `.switchApp` suggestion they
+        // carried as their rev-6 enabled value so re-enabling one restores its old behavior.
+        bindings[.swipeRight] = GestureBinding(enabled: false, action: .switchApp(.next))
+        bindings[.swipeLeft] = GestureBinding(enabled: false, action: .switchApp(.previous))
+        bindings[.swipeDown] = GestureBinding(enabled: false, action: .switchApp(.next))
+        bindings[.swipeUp] = GestureBinding(enabled: false, action: .switchApp(.previous))
 
         // Disabled, no suggested action — defaults revision 5: freed up by toggle-dictate's move
         // onto `victory` above (see that binding's comment for why the two poses overlapped).

@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import TacitCore
 
-@Test func catalogHasAllTwentyThreeEntries() {
-    #expect(GestureCatalog.entries.count == 23)
+@Test func catalogHasAllTwentyFiveEntries() {
+    #expect(GestureCatalog.entries.count == 25)
 }
 
 @Test func catalogEntryIDsAreUnique() {
@@ -25,7 +25,7 @@ import Testing
 
 @Test func catalogTierPartitionSizesMatchSpec() {
     #expect(GestureCatalog.entries(in: .workhorse).count == 10)
-    #expect(GestureCatalog.entries(in: .occasional).count == 10)
+    #expect(GestureCatalog.entries(in: .occasional).count == 12)
     #expect(GestureCatalog.entries(in: .deliberate).count == 3)
 }
 
@@ -70,7 +70,7 @@ import Testing
 
 @Test func nonReservedEntriesAreNotReserved() {
     let nonReserved = GestureCatalog.entries.filter { !$0.isReserved }
-    #expect(nonReserved.count == 21)
+    #expect(nonReserved.count == 23)
     for entry in nonReserved {
         #expect(entry.id != .looseFist && entry.id != .openPalm)
     }
@@ -123,6 +123,24 @@ import Testing
             "\(entry.id).isDetectorBacked disagrees with GestureCatalog.detectorBackedGestures"
         )
     }
+}
+
+@Test func palmTiltCannedFramesRotateOpenPalmAboutAFixedWrist() {
+    // `CannedFrames.rotatedAboutWrist` (private, exercised here through its two public products)
+    // must keep the wrist exactly where `openPalm` had it, and must move middleMCP in the
+    // direction `PalmTiltDetector`'s roll convention expects: palmTiltLeft's middleMCP swings
+    // toward decreasing x (the user's left), palmTiltRight's toward increasing x.
+    let openWrist = CannedFrames.openPalm.point(.wrist)!
+    let openMiddleMCP = CannedFrames.openPalm.point(.middleMCP)!
+
+    let left = CannedFrames.palmTiltLeft
+    let right = CannedFrames.palmTiltRight
+
+    #expect(left.point(.wrist) == openWrist, "palmTiltLeft must not move the wrist")
+    #expect(right.point(.wrist) == openWrist, "palmTiltRight must not move the wrist")
+
+    #expect(left.point(.middleMCP)!.x < openMiddleMCP.x, "palmTiltLeft's middleMCP should move toward decreasing x")
+    #expect(right.point(.middleMCP)!.x > openMiddleMCP.x, "palmTiltRight's middleMCP should move toward increasing x")
 }
 
 @Test func cannedFrameMatchesItsOwnEntryID() {

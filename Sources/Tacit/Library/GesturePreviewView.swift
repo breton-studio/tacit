@@ -16,7 +16,7 @@ import TacitCore
 /// directory — both cases must resolve to `nil`, not crash, so every call site's fallback path is
 /// reachable.
 enum PreviewAssets {
-    /// Per-gesture resolved URLs, computed once and cached — 23 stat() calls total across the
+    /// Per-gesture resolved URLs, computed once and cached — 25 stat() calls total across the
     /// app's lifetime instead of one pair per render of every card.
     private struct Resolved {
         var mov: URL?
@@ -232,7 +232,7 @@ struct GesturePreviewView: View {
 /// A muted, looping `AVPlayerLayer` presentation of a single HEVC-alpha `.mov`, wrapped for
 /// SwiftUI. Owns an `AVQueuePlayer` + `AVPlayerLooper` for gapless looping and tears both down on
 /// disappear — nothing here stays alive (and decoding frames) once the view isn't on screen, so
-/// hovering across a grid of 23 cards never accumulates idle players.
+/// hovering across a grid of 25 cards never accumulates idle players.
 private struct LoopingVideoLayer: View {
     var url: URL
     var isSuspended: Bool
@@ -323,7 +323,7 @@ private final class PlayerLayerView: NSView {
 
     /// `disableLooping()` before dropping references: `AVPlayerLooper` installs a boundary-time
     /// observer on the queue player that captures the looper itself, so simply nilling both
-    /// objects doesn't reliably break that internal retain cycle (Apple's own guidance) — with 23
+    /// objects doesn't reliably break that internal retain cycle (Apple's own guidance) — with 25
     /// hoverable grid cards, "sweep the mouse across the grid" is the primary way this view gets
     /// used, so every hover in/out is a fresh leak candidate without this.
     func stop() {

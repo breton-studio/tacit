@@ -95,6 +95,10 @@ public enum GestureID: String, Codable, CaseIterable, Sendable {
     // report gestures #16/#17 split the same way #9 was)
     case swipeLeft, swipeRight, swipeUp, swipeDown, fistToOpen, pinchDrag
     case wristRotateCW, wristRotateCCW, twoFingerScrollUp, twoFingerScrollDown
+    // 2026-08-24 ruling ("whole-hand swipes aren't being detected"): the app-switch job moves off
+    // the four hand swipes (which stay recognized/bindable but ship disabled — see defaults
+    // revision 7) onto an open-palm tilt: lean the open hand left or right, one tilt = one app.
+    case palmTiltLeft, palmTiltRight
     // Deliberate (M4)
     case palmPush, wave, twoHandFrame
 }

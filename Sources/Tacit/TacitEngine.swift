@@ -1541,6 +1541,11 @@ private actor PipelineCore {
     private var fistToOpenDetector = FistToOpenDetector()
     private var wristRotateDetector = WristRotateDetector()
     private var twoFingerScrollDetector = TwoFingerScrollDetector()
+    /// 2026-08-24 ruling ("whole-hand swipes aren't being detected"): the app-switch job's
+    /// replacement — an open-palm tilt left/right — wired in at the same "every frame,
+    /// unconditionally" level as the rest, ahead of `handSwipeDetector` in the momentary
+    /// precedence chain below (see `process(_:_:)`'s doc comment).
+    private var palmTiltDetector = PalmTiltDetector()
 
     /// Task 19's perform-to-preview mode: `false` unless a `CardDetailView` preview strip is
     /// currently mounted (see `TacitEngine.isPreviewActive`). `previewTapDetector` /
@@ -1558,6 +1563,8 @@ private actor PipelineCore {
     private var previewWristRotateDetector = WristRotateDetector()
     private var previewTwoFingerScrollDetector = TwoFingerScrollDetector()
     private var previewPinchDragDetector = PinchDragDetector()
+    /// Preview counterpart of `palmTiltDetector` above.
+    private var previewPalmTiltDetector = PalmTiltDetector()
     /// Fix (post-Task-19 review): tap/swipe detectors only fire on the ONE frame a tap releases or
     /// a swipe's travel threshold is crossed — at ~15Hz that's a ~66ms candidate, invisible as a
     /// "light up." This latches that momentary candidate so `previewCandidate` keeps reporting it
@@ -1601,8 +1608,11 @@ private actor PipelineCore {
     ///
     /// **Momentary precedence, first non-nil wins (identical order in production, preview, the
     /// `PipelineIntegrationTests` `Harness`, and `NegativeSuiteTests.replayThroughFullChain` — keep
-    /// all four in lockstep):** tap > thumbSwipe > handSwipe > fistToOpen > rotate tick > scroll
-    /// tick. This is a plain `??` chain, so — same as the pre-M3 tap/swipe pair — a detector later
+    /// all four in lockstep):** tap > thumbSwipe > palmTilt > handSwipe > fistToOpen > rotate tick >
+    /// scroll tick. `palmTiltDetector` sits ahead of `handSwipeDetector` (and therefore ahead of the
+    /// static `.openPalm` candidate too — see below) but behind tap/thumbSwipe, per the 2026-08-24
+    /// ruling that replaced the hand-swipe app-switch gestures with a palm tilt. This is a plain
+    /// `??` chain, so — same as the pre-M3 tap/swipe pair — a detector later
     /// in the chain is simply never `ingest`ed on a frame where an earlier one already fired;
     /// that's an accepted, established trade (a fire is a single frame, not an ongoing state) not
     /// a new one introduced here. If a momentary candidate and the static debounce path BOTH
@@ -1641,6 +1651,7 @@ private actor PipelineCore {
         let momentary = frame.flatMap {
             tapDetector.ingest($0)
                 ?? swipeDetector.ingest($0)
+                ?? palmTiltDetector.ingest($0)
                 ?? handSwipeDetector.ingest($0)
                 ?? fistToOpenDetector.ingest($0)
                 ?? wristRotateDetector.ingest($0)
@@ -1654,6 +1665,7 @@ private actor PipelineCore {
             if let frame {
                 let momentary = previewTapDetector.ingest(frame)
                     ?? previewSwipeDetector.ingest(frame)
+                    ?? previewPalmTiltDetector.ingest(frame)
                     ?? previewHandSwipeDetector.ingest(frame)
                     ?? previewFistToOpenDetector.ingest(frame)
                     ?? previewWristRotateDetector.ingest(frame)

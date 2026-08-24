@@ -11,11 +11,11 @@ import Testing
 ///
 /// 1. The static classifier's candidate is fed to `arbitration.ingest` first — the clutch/disarm
 ///    path, unchanged, always runs regardless of what any momentary detector does this frame.
-/// 2. A momentary candidate — `tap ?? thumbSwipe ?? handSwipe ?? fistToOpen ?? rotateTick ??
-///    scrollTick`, matching `PipelineCore.process`'s `??` short-circuit chain exactly — goes
-///    through the separate `arbitration.ingestPreDebounced` entry point. (`PinchDragDetector` has
-///    no place here: it's preview-only, per plan ruling 2, and never appears in ANY production or
-///    Harness momentary chain.)
+/// 2. A momentary candidate — `tap ?? thumbSwipe ?? palmTilt ?? handSwipe ?? fistToOpen ??
+///    rotateTick ?? scrollTick`, matching `PipelineCore.process`'s `??` short-circuit chain exactly
+///    — goes through the separate `arbitration.ingestPreDebounced` entry point. (`PinchDragDetector`
+///    has no place here: it's preview-only, per plan ruling 2, and never appears in ANY production
+///    or Harness momentary chain.)
 /// 3. If both return an event on the same frame, the momentary one wins — it's returned and the
 ///    static event is ledger-dropped (its cooldown/window bookkeeping inside `ingest` already
 ///    happened and is never undone; only which `GestureEvent` this frame reports differs).
@@ -28,6 +28,7 @@ private struct Harness {
     let classifier = StaticPoseClassifier()
     var tapDetector = PinchTapDetector()
     var swipeDetector = ThumbSwipeDetector()
+    var palmTiltDetector = PalmTiltDetector()
     var handSwipeDetector = HandSwipeDetector()
     var fistToOpenDetector = FistToOpenDetector()
     var wristRotateDetector = WristRotateDetector()
@@ -39,6 +40,7 @@ private struct Harness {
 
         let momentary = tapDetector.ingest(frame)
             ?? swipeDetector.ingest(frame)
+            ?? palmTiltDetector.ingest(frame)
             ?? handSwipeDetector.ingest(frame)
             ?? fistToOpenDetector.ingest(frame)
             ?? wristRotateDetector.ingest(frame)
@@ -196,6 +198,32 @@ private func pinchedFist(t: TimeInterval = 0) -> LandmarkFrame {
 
     guard case .armed = harness.arbitration.state else {
         Issue.record("expected still armed after the swipe, got \(harness.arbitration.state)")
+        return
+    }
+}
+
+// MARK: 3b. Clutch-then-palm-tilt: an armed, tilted-past-threshold open palm fires the tilt
+// candidate, not the static `.openPalm` candidate — proving palmTilt's precedence ahead of the
+// static candidate for open palm (2026-08-24 ruling replacing the hand swipes as the app-switch
+// gestures).
+
+@Test func armedPalmTiltBeatsTheStaticOpenPalmCandidate() {
+    var harness = Harness()
+    let t0 = armClutch(&harness)
+
+    // 30° > `PalmTiltTuning().enterDegrees` (25°); `rotate` is the CCW-positive helper documented
+    // in `SyntheticHand.swift`, which swings the wrist→middleMCP vector toward decreasing x (the
+    // user's left) — `.palmTiltLeft`'s direction, per `PalmTiltDetector`'s roll convention.
+    let tilted = rotate(SyntheticHand.openPalm(), degrees: 30, t: t0)
+    let event = harness.ingest(tilted)
+
+    // A single armed frame of a plain `openPalm` would never satisfy `ingest`'s 3-frame debounce,
+    // so the static path alone couldn't fire here either way — but this asserts the STRONGER
+    // claim: `palmTiltDetector`'s momentary candidate is what's actually returned.
+    #expect(event?.gesture == .palmTiltLeft)
+
+    guard case .armed = harness.arbitration.state else {
+        Issue.record("expected still armed after the palm tilt, got \(harness.arbitration.state)")
         return
     }
 }
