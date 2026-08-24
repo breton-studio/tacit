@@ -84,6 +84,28 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// falls back to the default device if the requested one no longer resolves (e.g. an external
     /// camera was unplugged) — this property is intentionally never validated against the live
     /// device list itself; that's `CaptureEngine`'s job, so this stays a dumb, persisted string.
+    /// Clutch-optional setting (2026-08-24 product ruling): whether the fist clutch (a sustained
+    /// `.looseFist` hold) must be armed before gestures fire. `true` requires it (the original
+    /// behavior — see `PopoverView`'s "Require clutch (fist to arm)" toggle / `SettingsTab`'s
+    /// mirror of it); `false` — the DEFAULT, per the user's own ask after their fist clutch
+    /// misread (the log showed `arming → disarmed` bouncing ten times before ever arming) — skips
+    /// the clutch entirely: any non-reserved gesture that clears debounce fires immediately, at a
+    /// stricter confidence floor (`ArbitrationTuning.clutchOffConfidenceBoost`) as the
+    /// false-positive brake. `UserDefaults`-backed under `"tacit.requiresClutch"`, same
+    /// persist-on-change / apply-once-at-launch pattern as `sensitivity` above (see `start()`'s
+    /// startup-apply comment) — every change also swaps `PipelineCore`'s live tuning via the SAME
+    /// actor path sensitivity/low-light already use, so all three always compose deterministically
+    /// (see `PipelineCore.recomputeTuning()`).
+    @Published var requiresClutch: Bool {
+        didSet {
+            guard requiresClutch != oldValue else { return }
+            UserDefaults.standard.set(requiresClutch, forKey: Self.requiresClutchDefaultsKey)
+            TacitLog.engine.notice("requiresClutch -> \(self.requiresClutch, privacy: .public)")
+            Task { [pipeline, requiresClutch] in
+                await pipeline?.setClutchRequired(requiresClutch)
+            }
+        }
+    }
     @Published var cameraID: String? {
         didSet {
             guard cameraID != oldValue else { return }
@@ -169,6 +191,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private static let debugViewEnabledDefaultsKey = "tacit.debugViewEnabled"
     private static let sensitivityDefaultsKey = "tacit.sensitivity"
     private static let cameraIDDefaultsKey = "tacit.cameraID"
+    private static let requiresClutchDefaultsKey = "tacit.requiresClutch"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
     /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
@@ -330,6 +353,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
         let storedSensitivity = UserDefaults.standard.string(forKey: Self.sensitivityDefaultsKey)
             .flatMap(SensitivityTrim.init(rawValue:))
         self.sensitivity = storedSensitivity ?? .standard
+        let storedRequiresClutch = UserDefaults.standard.object(forKey: Self.requiresClutchDefaultsKey) as? Bool
+        self.requiresClutch = storedRequiresClutch ?? false
         self.cameraID = UserDefaults.standard.string(forKey: Self.cameraIDDefaultsKey)
 
         capture.$state
@@ -456,6 +481,15 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // already `.standard`.
         Task { [pipeline, sensitivity] in
             await pipeline.setSensitivity(sensitivity)
+        }
+
+        // Clutch-optional setting: same rationale as the sensitivity apply-once above — a
+        // freshly-constructed `PipelineCore` always starts `currentRequiresClutch == true`
+        // regardless of what's persisted under `"tacit.requiresClutch"` (default `false`), so a
+        // restart must not silently revert the user back to requiring the clutch until they
+        // re-visit the toggle.
+        Task { [pipeline, requiresClutch] in
+            await pipeline.setClutchRequired(requiresClutch)
         }
 
         capture.onFrame = { pixelBuffer, timestamp in
@@ -875,7 +909,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 lastFiredAt: lastEvent?.timestamp,
                 isLowLight: lowLightPolicy.isLowLight,
                 isAccessibilityTrusted: AXIsProcessTrusted(),
-                timestamp: timestamp
+                timestamp: timestamp,
+                requiresClutch: requiresClutch
             )
         }
 
@@ -898,8 +933,19 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 // pipeline actor (same pattern as `setLowLight`/`setSensitivity` elsewhere in this
                 // file); `extendWindow` itself is a no-op if arbitration is no longer armed by the
                 // time this runs, so a benign race against a concurrent disarm is harmless.
-                Task { [pipeline] in
-                    await pipeline?.extendArbitrationWindow(at: timestamp)
+                //
+                // Clutch-optional setting: while `requiresClutch` is `false` the window is already
+                // `.infinity` (see `ArbitrationEngine`'s clutch-off mode) and can never expire out
+                // from under anything, so this no-ops entirely — no Task spawned, no per-frame
+                // allocation, no actor hop for a call `ArbitrationEngine.extendWindow` would have
+                // ignored anyway. Holds are unaffected either way: `isHoldActive` still tracks the
+                // hold correctly, and `result.arbitrationState` stays `.armed` for the hold's whole
+                // duration in clutch-off mode, so the `else` branch below (which ends the hold)
+                // is simply never reached until the pose itself is released.
+                if requiresClutch {
+                    Task { [pipeline] in
+                        await pipeline?.extendArbitrationWindow(at: timestamp)
+                    }
                 }
             } else {
                 // M3 Task 9 ended-path: disarm / command-window expiry. Arbitration is no longer
@@ -1328,7 +1374,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
         case .disarmed, .arming:
             return .watching
         case .armed:
-            return .armed
+            // Clutch-optional setting: while `requiresClutch` is `false`, arbitration is ALWAYS
+            // reported `.armed` (see `ArbitrationEngine`'s clutch-off mode) — showing the accent
+            // continuously would defeat the point of "one accent only for armed/fired" (spec §4),
+            // since there'd be no distinct resting state left to contrast it against. Only the
+            // transient `.fired` pulse (`pulseFired()`, unconditional) still shows the accent;
+            // resting reads as the same open-hand `.watching` glyph as the clutch-on disarmed
+            // state.
+            return requiresClutch ? .armed : .watching
         }
     }
 
@@ -1378,6 +1431,13 @@ private actor PipelineCore {
     /// re-derive the fully composed tuning from `baseArbitrationTuning` on EITHER a sensitivity
     /// change or a low-light flip, without needing the caller to re-supply the other half.
     private var isLowLight = false
+    /// Clutch-optional setting (2026-08-24): mirrors the most recent `setClutchRequired(_:)`
+    /// argument, folded into `recomputeTuning()`'s composed tuning the same way `isLowLight` is —
+    /// see that method's doc comment for the composition order. Defaults to `true` (matching
+    /// `ArbitrationTuning.requiresClutch`'s own default) purely as this actor's construction-time
+    /// value; `TacitEngine.start()` applies the real persisted value (default `false`) once,
+    /// exactly like it already does for `currentSensitivity`.
+    private var currentRequiresClutch = true
 
     /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
     /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
@@ -1592,16 +1652,33 @@ private actor PipelineCore {
         recomputeTuning()
     }
 
+    /// Clutch-optional setting (2026-08-24): called by `TacitEngine` whenever
+    /// `"tacit.requiresClutch"` changes. Composed into the same recompute every other tuning
+    /// source funnels through — see `recomputeTuning()`'s doc comment for the full order.
+    /// `ArbitrationEngine.setTuning` itself is what resets `state`/the debounce/cooldown ledger on
+    /// an actual `requiresClutch` flip (see that method's doc comment); this call is a plain
+    /// pass-through, same shape as `setSensitivity`/`setLowLight`.
+    func setClutchRequired(_ required: Bool) {
+        currentRequiresClutch = required
+        recomputeTuning()
+    }
+
     /// Fix (M3 Task 7): the M3 Task 6 version of this recompute swapped `arbitration`'s tuning
     /// straight from `baseArbitrationTuning` through `LowLightPolicy.adjusted` alone — correct
     /// while sensitivity didn't exist yet, but it would silently DISCARD the sensitivity trim on
     /// every low-light flip (a low-light flip while "Eager" is selected would reset the user back
     /// to the un-sensitized baseline plus the low-light raise, not "Eager" plus the low-light
-    /// raise). This is the single recompute both `setLowLight` and `setSensitivity` now funnel
-    /// through, always composed in the documented order: base → `currentSensitivity.applied(to:)`
-    /// → `LowLightPolicy.adjusted(_, lowLight: isLowLight)`.
+    /// raise). This is the single recompute `setLowLight`/`setSensitivity`/`setClutchRequired` all
+    /// funnel through, always composed in the documented order: base →
+    /// `currentSensitivity.applied(to:)` → `requiresClutch` folded in → `LowLightPolicy.adjusted(_,
+    /// lowLight: isLowLight)` → (applied by `ArbitrationEngine` itself, at ingest time, from
+    /// `tuning.clutchOffConfidenceBoost`) the clutch-off confidence boost. `requiresClutch` is
+    /// folded in BEFORE the low-light adjustment — not after — purely so `LowLightPolicy.adjusted`
+    /// (which copies the whole struct forward untouched aside from the two confidence fields it
+    /// raises) is always the last, outermost step, matching every other tuning source here.
     private func recomputeTuning() {
-        let sensitized = currentSensitivity.applied(to: baseArbitrationTuning)
+        var sensitized = currentSensitivity.applied(to: baseArbitrationTuning)
+        sensitized.requiresClutch = currentRequiresClutch
         arbitration.setTuning(LowLightPolicy.adjusted(sensitized, lowLight: isLowLight))
     }
 

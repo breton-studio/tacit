@@ -561,3 +561,116 @@ func feed(
     #expect(!events.isEmpty)
     #expect(t > originalWindowEndsAt + 10) // sanity: genuinely well past the original expiry
 }
+
+// MARK: - Clutch-optional (`ArbitrationTuning.requiresClutch == false`)
+//
+// Product ruling (2026-08-24): the clutch became a SETTING, default off, after a user's fist
+// clutch misread — the log showed `arming → disarmed` bouncing ten times before ever arming. Off
+// means "always armed": any non-reserved gesture that clears debounce fires immediately, the
+// command window never expires, and `looseFist`/`openPalm` stay reserved (unbindable) but do
+// nothing. The trust brake for skipping the clutch entirely: `enterConfidence`/`stayConfidence`
+// raised by `clutchOffConfidenceBoost` (clamped to 0.95) on top of whatever sensitivity/low-light
+// already produced.
+
+@Test func clutchOffStartsArmedAtInfinity() {
+    var tuning = ArbitrationTuning()
+    tuning.requiresClutch = false
+    let e = ArbitrationEngine(tuning: tuning)
+    guard case .armed(let windowEndsAt) = e.state, windowEndsAt == .infinity else {
+        Issue.record("expected armed(∞) from init, got \(e.state)")
+        return
+    }
+}
+
+@Test func clutchOffFiresOnceWithoutEverIngestingLooseFist() {
+    var tuning = ArbitrationTuning()
+    tuning.requiresClutch = false
+    let e = ArbitrationEngine(tuning: tuning)
+
+    // Three consecutive `.victory` frames at 0.9 — well above the boosted enter/stay floor —
+    // with NO `.looseFist` ever fed to the engine at all.
+    let events = feed(e, gesture: .victory, conf: 0.9, from: 0, frames: 3)
+    #expect(events.count == 1)
+    #expect(events.first?.gesture == .victory)
+
+    guard case .armed(let windowEndsAt) = e.state, windowEndsAt == .infinity else {
+        Issue.record("expected state to stay armed(∞) after firing, got \(e.state)")
+        return
+    }
+}
+
+@Test func clutchOffOpenPalmDoesNotDisarmAndVictoryStillFiresAfter() {
+    var tuning = ArbitrationTuning()
+    tuning.requiresClutch = false
+    let e = ArbitrationEngine(tuning: tuning)
+
+    let openPalmEvents = feed(e, gesture: .openPalm, conf: 0.9, from: 0, frames: 5)
+    #expect(openPalmEvents.isEmpty)
+    guard case .armed(let windowEndsAt) = e.state, windowEndsAt == .infinity else {
+        Issue.record("expected still armed(∞) after openPalm frames, got \(e.state)")
+        return
+    }
+
+    let victoryEvents = feed(e, gesture: .victory, conf: 0.9, from: 1.0, frames: 3)
+    #expect(victoryEvents.count == 1)
+}
+
+@Test func clutchOffConfidenceBoostRaisesTheEnterThreshold() {
+    var tuning = ArbitrationTuning()
+    tuning.requiresClutch = false
+    // Base enterConfidence 0.6, clutchOffConfidenceBoost 0.15 -> effective enter threshold 0.75.
+    #expect(tuning.enterConfidence == 0.6)
+    #expect(tuning.clutchOffConfidenceBoost == 0.15)
+
+    let below = ArbitrationEngine(tuning: tuning)
+    // 0.70 < the boosted 0.75 floor -> never starts a debounce, no matter how many frames.
+    let belowEvents = feed(below, gesture: .victory, conf: 0.70, from: 0, frames: 10)
+    #expect(belowEvents.isEmpty)
+
+    let above = ArbitrationEngine(tuning: tuning)
+    // 0.80 >= the boosted 0.75 floor -> starts, and fires after `debounceFrames` (3).
+    let aboveEvents = feed(above, gesture: .victory, conf: 0.80, from: 0, frames: 3)
+    #expect(aboveEvents.count == 1)
+}
+
+@Test func clutchOffCooldownStillBlocksASecondFire() {
+    var tuning = ArbitrationTuning()
+    tuning.requiresClutch = false
+    let e = ArbitrationEngine(tuning: tuning)
+
+    let firstEvents = feed(e, gesture: .victory, conf: 0.9, from: 0, frames: 3)
+    #expect(firstEvents.count == 1)
+
+    // Well within the 0.8s cooldown.
+    let refireStart = firstEvents[0].timestamp + 0.1
+    let secondEvents = feed(e, gesture: .victory, conf: 0.9, from: refireStart, frames: 3)
+    #expect(secondEvents.isEmpty)
+}
+
+@Test func runtimeFlipOnOffOnResetsStateAndClearsLedger() {
+    let e = ArbitrationEngine() // default tuning: requiresClutch == true
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+    let firstEvents = feed(e, gesture: .victory, conf: 0.9, from: 1.0, frames: 3)
+    #expect(firstEvents.count == 1)
+
+    var off = ArbitrationTuning()
+    off.requiresClutch = false
+    e.setTuning(off)
+    guard case .armed(let windowEndsAt) = e.state, windowEndsAt == .infinity else {
+        Issue.record("expected armed(∞) immediately after flipping the clutch off, got \(e.state)")
+        return
+    }
+
+    // Ledger cleared by the flip: the same gesture that was still on cooldown before the flip
+    // fires again immediately.
+    let postFlipEvents = feed(
+        e, gesture: .victory, conf: 0.9, from: firstEvents[0].timestamp + 0.1, frames: 3
+    )
+    #expect(postFlipEvents.count == 1)
+
+    var on = ArbitrationTuning()
+    on.requiresClutch = true
+    e.setTuning(on)
+    #expect(e.state == .disarmed)
+}

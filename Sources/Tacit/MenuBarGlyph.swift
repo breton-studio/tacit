@@ -23,6 +23,10 @@ protocol EngineUIState: ObservableObject {
     /// Gesture debug view toggle (popover "Show gesture debug view" row): shows/hides
     /// `TacitEngine.debugPanelController`'s floating panel. See `TacitEngine.isDebugViewEnabled`.
     var isDebugViewEnabled: Bool { get set }
+    /// Clutch-optional setting (popover "Require clutch (fist to arm)" row / Settings tab mirror):
+    /// whether the fist clutch must be armed before gestures fire. `false` is the default. See
+    /// `TacitEngine.requiresClutch`.
+    var requiresClutch: Bool { get set }
     /// Low light / permission rows, etc. `nil` means no warning to show.
     var warning: String? { get }
     /// The chord a `.toggleKeystroke` currently has held down, or `nil` when nothing is latched.

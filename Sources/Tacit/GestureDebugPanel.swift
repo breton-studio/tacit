@@ -187,12 +187,18 @@ struct GestureDebugView: View {
     }
 
     private var isArmed: Bool {
+        // Clutch-optional setting: while `requiresClutch` is `false`, arbitration is ALWAYS
+        // `.armed` — so this must NOT read as "armed" for accent-coloring purposes here, or the
+        // "Off" text below would be accent-highlighted for no reason (nothing is currently armed
+        // in any meaningful sense; the clutch is simply turned off as a setting).
+        guard state.snapshot?.requiresClutch == true else { return false }
         guard case .armed = state.snapshot?.arbitration else { return false }
         return true
     }
 
     private var clutchText: String {
         guard let snapshot = state.snapshot else { return "—" }
+        guard snapshot.requiresClutch else { return "Off" }
         switch snapshot.arbitration {
         case .disarmed:
             return "Disarmed"

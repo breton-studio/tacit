@@ -32,7 +32,10 @@ thumbs-up focuses the nearest text field, holding a point gesture holds down Fn 
 stock push-to-talk hotkey — and a thumb-to-ring/pinky tap *toggles* Fn for hands-free dictation
 until you tap again (the menu bar popover shows a "Release" row while it's held). Copy, paste,
 undo and redo ride the thumb taps and thumb swipes. Everything else ships off; every binding is
-rebindable in the Library, where a keystroke can be delivered as a press, a hold, or a toggle.
+rebindable in the Library, where a keystroke can be delivered as a press, a hold, or a toggle. The
+clutch itself is optional and off by default for now — gestures fire the moment they're
+recognized, at a stricter confidence floor — with a "Require clutch (fist to arm)" toggle in the
+popover and Settings tab for anyone who wants the fist hold back.
 Tacit lives in the menu bar from then on — click the glyph for the master toggle, "Pause for an Hour,"
 launch-at-login, and the gesture library, which also holds a Settings tab for picking a camera and
 trimming overall gesture sensitivity. Flip "Show gesture debug view" in the popover for a small

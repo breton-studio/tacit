@@ -26,4 +26,9 @@ struct GestureDebugSnapshot: Equatable, Sendable {
     var isLowLight: Bool
     var isAccessibilityTrusted: Bool
     var timestamp: TimeInterval
+    /// Clutch-optional setting (2026-08-24): mirrors `TacitEngine.requiresClutch` — the Clutch row
+    /// in `GestureDebugView` shows "Off" instead of the usual disarmed/arming/armed reading
+    /// whenever this is `false`, since arbitration is then always reported `.armed` and the normal
+    /// reading would be meaningless noise.
+    var requiresClutch: Bool
 }

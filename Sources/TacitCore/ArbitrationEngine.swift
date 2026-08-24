@@ -29,6 +29,27 @@ public struct ArbitrationTuning: Sendable {
     /// Confidence required for a frame to *continue* an already-started debounce count (hysteresis).
     public var stayConfidence: Double = 0.45
 
+    /// Product ruling (2026-08-24): whether the clutch (a sustained `.looseFist` hold) must be
+    /// armed before gestures can fire. `true` (default) is the original clutch-gated behavior —
+    /// `ArbitrationEngine` starts `.disarmed`, and only a completed clutch hold ever lets a
+    /// non-reserved gesture debounce/fire. `false` — the app's own persisted default, set after a
+    /// user's fist clutch misread (the log showed `arming → disarmed` bouncing ten times before
+    /// ever arming) — skips the clutch entirely: the engine reports `.armed(windowEndsAt:
+    /// .infinity)` for its whole lifetime, any non-reserved gesture that clears debounce fires
+    /// immediately, and the command window never expires. `looseFist`/`openPalm` stay reserved
+    /// (unbindable) but simply do nothing when ingested — no event, no state change — rather than
+    /// arming/disarming anything. See `ArbitrationEngine`'s `ingest`/`ingestPreDebounced` doc
+    /// comments for the exact mechanics.
+    public var requiresClutch: Bool = true
+
+    /// The false-positive brake for `requiresClutch == false`: since there's no clutch hold left
+    /// to gate entry into "armed," `enterConfidence`/`stayConfidence` are raised by this amount
+    /// (clamped to ≤0.95) before being compared against any candidate — composed on top of
+    /// whatever `SensitivityTrim`/`LowLightPolicy` already produced, exactly the way those two
+    /// compose with each other today. Only takes effect while `requiresClutch` is `false`; has no
+    /// effect otherwise.
+    public var clutchOffConfidenceBoost: Double = 0.15
+
     public init() {}
 }
 
@@ -93,23 +114,64 @@ public final class ArbitrationEngine {
     /// a 0.2s cooldown and silently swallow a tick that should have fired.
     private static let cooldownEpsilon: TimeInterval = 1e-9
 
+    /// `tuning.enterConfidence`, raised by `tuning.clutchOffConfidenceBoost` (clamped to ≤0.95)
+    /// whenever `tuning.requiresClutch` is `false` — see that field's doc comment. Returns
+    /// `tuning.enterConfidence` unchanged while the clutch is required, so every clutch-on code
+    /// path (`processArmed`, and `ingestPreDebounced` while `requiresClutch` is `true`) behaves
+    /// identically whether it reads this or `tuning.enterConfidence` directly.
+    private var effectiveEnterConfidence: Double {
+        guard !tuning.requiresClutch else { return tuning.enterConfidence }
+        return min(tuning.enterConfidence + tuning.clutchOffConfidenceBoost, 0.95)
+    }
+
+    /// `tuning.stayConfidence`'s counterpart to `effectiveEnterConfidence` above.
+    private var effectiveStayConfidence: Double {
+        guard !tuning.requiresClutch else { return tuning.stayConfidence }
+        return min(tuning.stayConfidence + tuning.clutchOffConfidenceBoost, 0.95)
+    }
+
     public init(tuning: ArbitrationTuning = ArbitrationTuning()) {
         self.tuning = tuning
+        if !tuning.requiresClutch {
+            state = .armed(windowEndsAt: .infinity)
+        }
     }
 
-    /// Replaces the tuning used by every subsequent `ingest`/`ingestPreDebounced` call, leaving
-    /// `state`, the arming clock, the in-progress debounce, and every gesture's cooldown ledger
-    /// exactly as they were — see `tuning`'s doc comment for why swapping in place (rather than
-    /// recreating the engine) matters. Callers driving this from outside a single-threaded context
-    /// must serialize their own calls (e.g. via an owning actor) the same way `ingest` itself
-    /// requires; this method does no locking of its own.
+    /// Replaces the tuning used by every subsequent `ingest`/`ingestPreDebounced` call.
+    ///
+    /// If `requiresClutch` is unchanged by this swap, `state`, the arming clock, the in-progress
+    /// debounce, and every gesture's cooldown ledger are left exactly as they were — see
+    /// `tuning`'s doc comment for why swapping in place (rather than recreating the engine)
+    /// matters. If `requiresClutch` itself flips (the clutch setting being toggled at runtime),
+    /// every counter/ledger is cleared and `state` is set to the correct initial state for the new
+    /// mode (off → `.armed(windowEndsAt: .infinity)`; on → `.disarmed`) — exactly as if the engine
+    /// had been freshly constructed with this tuning — since neither an in-progress debounce nor a
+    /// cooldown ledger accumulated under one mode is meaningful under the other.
+    ///
+    /// Callers driving this from outside a single-threaded context must serialize their own calls
+    /// (e.g. via an owning actor) the same way `ingest` itself requires; this method does no
+    /// locking of its own.
     public func setTuning(_ tuning: ArbitrationTuning) {
+        let requiresClutchChanged = tuning.requiresClutch != self.tuning.requiresClutch
         self.tuning = tuning
+        guard requiresClutchChanged else { return }
+        clearLedger()
+        state = tuning.requiresClutch ? .disarmed : .armed(windowEndsAt: .infinity)
     }
 
-    /// Returns the engine to `.disarmed` with every counter cleared, as if newly constructed.
+    /// Returns the engine to its mode's initial state — `.disarmed` while `requiresClutch` is
+    /// `true`, `.armed(windowEndsAt: .infinity)` while it's `false` — with every counter cleared,
+    /// as if newly constructed with the current tuning.
     public func reset() {
-        state = .disarmed
+        clearLedger()
+        state = tuning.requiresClutch ? .disarmed : .armed(windowEndsAt: .infinity)
+    }
+
+    /// Shared by `reset()` and `setTuning(_:)`'s mode-flip path: clears every piece of ledger state
+    /// (the arming clock, the in-progress debounce, the per-gesture cooldown map, and the
+    /// most-recent-arming timestamp) without touching `state` itself — callers set `state` to
+    /// whatever's correct for their situation immediately after.
+    private func clearLedger() {
         armingStartAt = nil
         debounceGesture = nil
         debounceCount = 0
@@ -120,6 +182,10 @@ public final class ArbitrationEngine {
     /// Feed exactly one sample per inference frame (nil = nothing classified this frame).
     /// Returns a fired event, or nil. Mutates `state`.
     public func ingest(_ candidate: GestureCandidate?, at now: TimeInterval) -> GestureEvent? {
+        guard tuning.requiresClutch else {
+            return processClutchOff(candidate, now: now)
+        }
+
         switch state {
         case .disarmed, .arming:
             processClutch(candidate, now: now)
@@ -169,11 +235,15 @@ public final class ArbitrationEngine {
     /// if the suppressed candidate had never arrived. Every other gesture is unaffected.
     public func ingestPreDebounced(_ candidate: GestureCandidate, at now: TimeInterval) -> GestureEvent? {
         guard case .armed(let windowEndsAt) = state, now < windowEndsAt else { return nil }
-        guard candidate.confidence >= tuning.enterConfidence else { return nil }
+        guard candidate.confidence >= effectiveEnterConfidence else { return nil }
         guard !GestureCatalog.entry(for: candidate.gesture).isReserved else { return nil }
 
         let gesture = candidate.gesture
 
+        // While `requiresClutch` is `false` no arming ever happens, so `lastArmedAt` stays `nil`
+        // forever (see `clearLedger()`/`processClutch`) — this guard is naturally a no-op in that
+        // mode, exactly matching the brief: "postArmSuppression ... does not apply (no arm ever
+        // happens)."
         if gesture == .fistToOpen, let lastArmedAt, now - lastArmedAt < tuning.postArmSuppression {
             return nil
         }
@@ -184,7 +254,7 @@ public final class ArbitrationEngine {
         }
 
         lastFiredAt[gesture] = now
-        state = .armed(windowEndsAt: now + tuning.commandWindow)
+        state = tuning.requiresClutch ? .armed(windowEndsAt: now + tuning.commandWindow) : .armed(windowEndsAt: .infinity)
         return GestureEvent(gesture: gesture, timestamp: now)
     }
 
@@ -199,7 +269,10 @@ public final class ArbitrationEngine {
     /// caller's own ended-path handling (not this method) is what reconciles that. Touches only
     /// `windowEndsAt`; never perturbs the cooldown ledger, debounce, or arming bookkeeping.
     public func extendWindow(at now: TimeInterval) {
-        guard case .armed = state else { return }
+        // While `requiresClutch` is `false` the window is already `.infinity` and never expires —
+        // extending it to a finite `now + commandWindow` here would be a regression, not a no-op,
+        // so this guards on `tuning.requiresClutch` too (not just `case .armed`).
+        guard case .armed = state, tuning.requiresClutch else { return }
         state = .armed(windowEndsAt: now + tuning.commandWindow)
     }
 
@@ -286,6 +359,65 @@ public final class ArbitrationEngine {
 
         lastFiredAt[gesture] = now
         state = .armed(windowEndsAt: now + tuning.commandWindow)
+        return GestureEvent(gesture: gesture, timestamp: now)
+    }
+
+    // MARK: - Clutch-optional phase (`tuning.requiresClutch == false`)
+
+    /// `ingest`'s entire entry point while `tuning.requiresClutch` is `false` — no arming, no
+    /// disarming, no window expiry: `state` stays `.armed(windowEndsAt: .infinity)` for the whole
+    /// call. Debounce/hysteresis/per-gesture-cooldown logic mirrors `processArmed` above, using
+    /// `effectiveEnterConfidence`/`effectiveStayConfidence` (the clutch-off trust brake) in place
+    /// of the raw `tuning` values, with two differences from `processArmed`:
+    ///
+    /// 1. `looseFist`/`openPalm` (`GestureCatalog...isReserved`) are simply ignored — no event, no
+    ///    debounce reset, no disarm (there's no clutch left to disarm). `looseFist` already fell
+    ///    through harmlessly whether reserved or not (it's never `debounceGesture`-tracked as a
+    ///    fireable gesture), but `openPalm` is the meaningful change: `processArmed` disarms on a
+    ///    completed `openPalm` debounce, which would be wrong here — there's nothing to disarm
+    ///    into, and doing so would just silently re-implement a clutch nobody asked for.
+    /// 2. A fire re-affirms `.armed(windowEndsAt: .infinity)`, not a finite `now + commandWindow`
+    ///    window — there is nothing to extend; the window was never going to expire either way.
+    private func processClutchOff(_ candidate: GestureCandidate?, now: TimeInterval) -> GestureEvent? {
+        guard let candidate else {
+            debounceGesture = nil
+            debounceCount = 0
+            return nil
+        }
+
+        guard !GestureCatalog.entry(for: candidate.gesture).isReserved else { return nil }
+
+        if candidate.gesture == debounceGesture {
+            guard candidate.confidence >= effectiveStayConfidence else {
+                debounceGesture = nil
+                debounceCount = 0
+                return nil
+            }
+            debounceCount += 1
+        } else {
+            guard candidate.confidence >= effectiveEnterConfidence else {
+                debounceGesture = nil
+                debounceCount = 0
+                return nil
+            }
+            debounceGesture = candidate.gesture
+            debounceCount = 1
+        }
+
+        guard debounceCount >= tuning.debounceFrames else { return nil }
+
+        // Debounce threshold reached: consume this attempt regardless of outcome, so a further
+        // hold of the same gesture must re-debounce from scratch before it can act again.
+        let gesture = candidate.gesture
+        debounceGesture = nil
+        debounceCount = 0
+
+        if let last = lastFiredAt[gesture], now - last < tuning.cooldown - Self.cooldownEpsilon {
+            return nil
+        }
+
+        lastFiredAt[gesture] = now
+        state = .armed(windowEndsAt: .infinity)
         return GestureEvent(gesture: gesture, timestamp: now)
     }
 }

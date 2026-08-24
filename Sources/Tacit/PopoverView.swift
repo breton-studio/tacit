@@ -32,6 +32,7 @@ struct PopoverView<Engine: EngineUIState>: View {
 
             hudToggleRow
             debugViewToggleRow
+            requiresClutchToggleRow
             LaunchAtLoginToggleRow()
 
             if let warning = engine.warning {
@@ -143,6 +144,16 @@ struct PopoverView<Engine: EngineUIState>: View {
     /// hand/camera against what Tacit is actually seeing.
     private var debugViewToggleRow: some View {
         Toggle("Show gesture debug view", isOn: $engine.isDebugViewEnabled)
+            .toggleStyle(TacitToggleStyle())
+            .padding(.horizontal, 10)
+            .frame(minHeight: 44)
+    }
+
+    /// Clutch-optional setting (2026-08-24 product ruling): off by default — gestures fire the
+    /// moment they're recognized, at a stricter confidence floor, with no fist hold gating them.
+    /// See `TacitEngine.requiresClutch`.
+    private var requiresClutchToggleRow: some View {
+        Toggle("Require clutch (fist to arm)", isOn: $engine.requiresClutch)
             .toggleStyle(TacitToggleStyle())
             .padding(.horizontal, 10)
             .frame(minHeight: 44)

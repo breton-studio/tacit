@@ -36,6 +36,16 @@ struct SettingsTab: View {
                         .padding(.horizontal, 10)
                 }
 
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader("Clutch")
+                    requiresClutchRow
+                    Text("Off: gestures fire as soon as they're recognized. On: hold a loose fist first, then gesture.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                }
+
                 hairline
 
                 LaunchAtLoginToggleRow()
@@ -100,6 +110,20 @@ struct SettingsTab: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+
+    // MARK: - Clutch
+
+    /// Clutch-optional setting (2026-08-24 product ruling): identical row/binding to
+    /// `PopoverView.requiresClutchToggleRow` — see `TacitEngine.requiresClutch`.
+    private var requiresClutchRow: some View {
+        Toggle(isOn: $engine.requiresClutch) {
+            Text("Require clutch (fist to arm)")
+                .font(.body)
+        }
+        .toggleStyle(TacitToggleStyle())
         .frame(minHeight: 44, alignment: .leading)
         .padding(.horizontal, 10)
     }
