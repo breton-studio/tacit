@@ -98,6 +98,15 @@ import Testing
     #expect(tipSeparation > mcpSeparation, "tips (\(tipSeparation)) should separate MORE than MCPs (\(mcpSeparation)), not converge")
 }
 
+@Test func everyCatalogEntryHasANonEmptyHintWithNoExclamationMarks() {
+    // Task 7 (Try-It session): the hint shown on a Try-It timeout must be concrete coaching, not
+    // generic cheerleading — enforcing "no exclamation marks" is a cheap proxy for that tone.
+    for entry in GestureCatalog.entries {
+        #expect(!entry.hint.isEmpty, "\(entry.id) has an empty hint")
+        #expect(!entry.hint.contains("!"), "\(entry.id) hint contains an exclamation mark: \(entry.hint)")
+    }
+}
+
 @Test func cannedFrameMatchesItsOwnEntryID() {
     // `CatalogEntry.init` derives `cannedFrame` from `CannedFrames.frame(for: id)` — this just
     // guards that indirection against ever drifting (e.g. a future hand-edit that passes a

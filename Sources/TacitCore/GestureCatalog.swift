@@ -38,6 +38,12 @@ public struct CatalogEntry: Sendable {
     /// most-legible keyframe for a dynamic one. Always derived from `CannedFrames.frame(for: id)`
     /// so `id` and `cannedFrame` can never drift out of sync with each other.
     public var cannedFrame: LandmarkFrame
+    /// Task 7 (Try-It session): one line of concrete, plain-verb coaching on what the detector
+    /// actually needs, shown when a Try-It session times out without registering this gesture —
+    /// sourced from the ergonomics research (`docs/research/LowFatigue-Economic-Hand-Gestures.md`),
+    /// not generic encouragement. Phrased as a respectful correction (e.g. "brush the fingertip,
+    /// don't squeeze"), never an exclamation.
+    public var hint: String
 
     public init(
         id: GestureID,
@@ -47,7 +53,8 @@ public struct CatalogEntry: Sendable {
         comfort: String,
         falsePositiveRisk: String,
         editorial: String,
-        isReserved: Bool = false
+        isReserved: Bool = false,
+        hint: String
     ) {
         self.id = id
         self.displayName = displayName
@@ -58,6 +65,7 @@ public struct CatalogEntry: Sendable {
         self.editorial = editorial
         self.isReserved = isReserved
         self.cannedFrame = CannedFrames.frame(for: id)
+        self.hint = hint
     }
 }
 
@@ -80,7 +88,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Medium",
             editorial: "The lowest-excursion discrete action available — a light touch and release, "
                 + "not a squeeze, keeps the thumb joint out of harm's way.",
-            isReserved: false
+            isReserved: false,
+            hint: "A light touch — brush the fingertip, don't squeeze."
         ),
         CatalogEntry(
             id: .thumbMiddleTap,
@@ -91,7 +100,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Medium",
             editorial: "A second, distinct thumb channel; the middle finger is the next most "
                 + "independently controllable digit after the index.",
-            isReserved: false
+            isReserved: false,
+            hint: "A light touch with the middle finger — brush the fingertip, don't squeeze."
         ),
         CatalogEntry(
             id: .indexPoint,
@@ -101,7 +111,8 @@ public enum GestureCatalog {
             comfort: "Low fatigue",
             falsePositiveRisk: "Low–Medium",
             editorial: "Point to speak: hold to dictate, release to stop.",
-            isReserved: false
+            isReserved: false,
+            hint: "Point with a relaxed hand and hold the pose — a quick jab won't register."
         ),
         CatalogEntry(
             id: .victory,
@@ -112,7 +123,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "Two separated fingers are easy for the camera to tell apart, but the spread "
                 + "costs more comfort than it appears to — keep it brief, not held.",
-            isReserved: false
+            isReserved: false,
+            hint: "Spread the index and middle fingers into a clear V — a half-open V can read as a fist."
         ),
         CatalogEntry(
             id: .thumbsUp,
@@ -123,7 +135,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "A comfortable, highly separable pose; its main risk is firing during an "
                 + "ordinary conversational thumbs-up, not fatigue.",
-            isReserved: false
+            isReserved: false,
+            hint: "Extend the thumb clearly away from the fist — a tucked thumb can look closed."
         ),
         CatalogEntry(
             id: .looseFist,
@@ -135,7 +148,8 @@ public enum GestureCatalog {
             editorial: "Reserved as the system's clutch: a loose fist rates as comfortable and is "
                 + "detected almost perfectly, making it the natural gesture to arm the system "
                 + "before anything else fires.",
-            isReserved: true
+            isReserved: true,
+            hint: "Curl the fingers into a relaxed fist — loose reads better than clenched."
         ),
         CatalogEntry(
             id: .openPalm,
@@ -146,7 +160,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "Reserved as the system's disarm: maximum landmark visibility for the "
                 + "camera, with fingers relaxed rather than splayed to stay comfortable.",
-            isReserved: true
+            isReserved: true,
+            hint: "Open the hand fully, fingers relaxed, palm toward the camera."
         ),
         CatalogEntry(
             id: .thumbRingPinkyTap,
@@ -158,7 +173,9 @@ public enum GestureCatalog {
             editorial: "Anatomically it's a thumb tap, so it sits with the other workhorses — but "
                 + "the ring finger is tendon-coupled to the middle finger and the pinky is weak, "
                 + "and the research rates this one for occasional rather than high-frequency use.",
-            isReserved: false
+            isReserved: false,
+            hint: "Bring the thumb to the ring or pinky finger with a light touch — give the "
+                + "tendon-linked fingers a beat to separate."
         ),
         CatalogEntry(
             id: .thumbSwipeForward,
@@ -169,7 +186,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "A small thumb swipe along the index finger — the core low-fatigue "
                 + "microgesture, distinguishable from a resting hand by its motion alone.",
-            isReserved: false
+            isReserved: false,
+            hint: "One quick, deliberate flick of the thumb along the index finger — speed "
+                + "matters more than distance."
         ),
         CatalogEntry(
             id: .thumbSwipeBackward,
@@ -180,7 +199,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "The mirror of the forward swipe; paired opposite gestures like this are "
                 + "easier to learn and to recall under pressure.",
-            isReserved: false
+            isReserved: false,
+            hint: "One quick, deliberate flick of the thumb back along the index finger — speed "
+                + "matters more than distance."
         ),
 
         // MARK: Occasional (report gestures 10–17)
@@ -193,7 +214,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "An unambiguous directional flick; it costs more motion than a static pose "
                 + "but is rarely triggered by accident.",
-            isReserved: false
+            isReserved: false,
+            hint: "Swipe left with your whole hand, wrist leading — one clean flick, not a drift."
         ),
         CatalogEntry(
             id: .swipeRight,
@@ -203,7 +225,8 @@ public enum GestureCatalog {
             comfort: "Low–Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "Switch apps with a flick to the right.",
-            isReserved: false
+            isReserved: false,
+            hint: "Swipe right with your whole hand, wrist leading — one clean flick, not a drift."
         ),
         CatalogEntry(
             id: .swipeUp,
@@ -213,7 +236,8 @@ public enum GestureCatalog {
             comfort: "Moderate fatigue",
             falsePositiveRisk: "Low",
             editorial: "Swipe up into the text field.",
-            isReserved: false
+            isReserved: false,
+            hint: "Swipe upward with your whole hand, wrist leading — one clean flick, not a drift."
         ),
         CatalogEntry(
             id: .swipeDown,
@@ -224,7 +248,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "Mirrors swipe up, with the same moderate effort and the same "
                 + "occasional-use budget.",
-            isReserved: false
+            isReserved: false,
+            hint: "Swipe downward with your whole hand, wrist leading — one clean flick, not a drift."
         ),
         CatalogEntry(
             id: .fistToOpen,
@@ -235,7 +260,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Very Low",
             editorial: "Chaining two robust static states into one gesture makes this the most "
                 + "false-positive-resistant dynamic gesture in the catalog.",
-            isReserved: false
+            isReserved: false,
+            hint: "Start from a clear fist, then bloom the hand fully open — hold each end for a beat."
         ),
         CatalogEntry(
             id: .pinchDrag,
@@ -246,7 +272,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "A held pinch gives a clean start and stop for continuous control, provided "
                 + "the pinch stays a light touch rather than a squeeze.",
-            isReserved: false
+            isReserved: false,
+            hint: "Pinch thumb and index together, then move while holding the pinch — release "
+                + "fully to end the drag."
         ),
         CatalogEntry(
             id: .wristRotateCW,
@@ -258,7 +286,8 @@ public enum GestureCatalog {
             editorial: "A rotary metaphor for continuous values, kept to a partial arc rather than a "
                 + "full pronation. Turns fire a tick per motion increment while you rotate — bind "
                 + "something you want repeated.",
-            isReserved: false
+            isReserved: false,
+            hint: "Turn the wrist clockwise in a small arc — keep the turn under a quarter turn."
         ),
         CatalogEntry(
             id: .wristRotateCCW,
@@ -269,7 +298,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "The mirror of the clockwise turn, same partial-arc limit. Ticks fire the "
                 + "other direction while you rotate — bind something you want repeated.",
-            isReserved: false
+            isReserved: false,
+            hint: "Turn the wrist counter-clockwise in a small arc — keep the turn under a quarter turn."
         ),
         CatalogEntry(
             id: .twoFingerScrollUp,
@@ -280,7 +310,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "A familiar scroll metaphor with well-separated landmarks. Ticks fire "
                 + "repeatedly while you scroll — bind something you want repeated.",
-            isReserved: false
+            isReserved: false,
+            hint: "Move two extended fingers upward together, steady and slow — pace, not "
+                + "distance, drives the scroll."
         ),
         CatalogEntry(
             id: .twoFingerScrollDown,
@@ -291,7 +323,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "Mirrors the upward scroll, ticking the other direction at the same "
                 + "repeating cadence — bind something you want repeated.",
-            isReserved: false
+            isReserved: false,
+            hint: "Move two extended fingers downward together, steady and slow — pace, not "
+                + "distance, drives the scroll."
         ),
 
         // MARK: Deliberate (report gestures 18–20)
@@ -304,7 +338,8 @@ public enum GestureCatalog {
             falsePositiveRisk: "Low",
             editorial: "A deliberate push toward the camera; depth is coarse on a single lens, so "
                 + "this is best used as one big, infrequent confirmation.",
-            isReserved: false
+            isReserved: false,
+            hint: "Push the open palm toward the camera in one clear motion, then pull back."
         ),
         CatalogEntry(
             id: .wave,
@@ -315,7 +350,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Medium",
             editorial: "Highly visible and socially legible, which cuts both ways — reserved for "
                 + "rare use so it doesn't fire in the middle of a conversation.",
-            isReserved: false
+            isReserved: false,
+            hint: "Wave the open hand side to side at least twice, keeping the motion visible and "
+                + "unhurried."
         ),
         CatalogEntry(
             id: .twoHandFrame,
@@ -326,7 +363,9 @@ public enum GestureCatalog {
             falsePositiveRisk: "Very Low",
             editorial: "Two hands together are nearly impossible to trigger by accident, which is "
                 + "exactly why this is reserved for a single rare, powerful action.",
-            isReserved: false
+            isReserved: false,
+            hint: "Bring both hands together to frame the shot and hold for a beat — small, "
+                + "controlled motion counts more than speed."
         ),
     ]
 
