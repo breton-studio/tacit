@@ -104,9 +104,11 @@ struct ActionBinderView: View {
         }
     }
 
+    /// M3 Task 9: generalized to `requiresAccessibility` (rather than pattern-matching `.keystroke`
+    /// specifically) so a `.holdKeystroke` binding — which needs Accessibility exactly the same
+    /// way — also surfaces this notice.
     private var isKeystrokeBound: Bool {
-        if case .keystroke = store.binding(for: entry.id).action { return true }
-        return false
+        store.binding(for: entry.id).action?.requiresAccessibility ?? false
     }
 
     private func requestAccessibilityAccess() {
@@ -141,10 +143,16 @@ private enum ActionKind: CaseIterable, Identifiable, Hashable {
     }
 
     /// The kind matching an existing action, or `.keystroke` for `nil` (brief: "keystroke if
-    /// none").
+    /// none"). M3 Task 9: `.holdKeystroke` also maps to `.keystroke` here — there's no dedicated
+    /// binder UI for it yet (out of this task's scope; a hold binding is currently only produced
+    /// programmatically), so its segment falls back to the closest existing one rather than
+    /// crashing/defaulting to something misleading. `KeystrokeBinder.currentChord` below only
+    /// recognizes `.keystroke`, so an existing `.holdKeystroke` binding shows as "No shortcut
+    /// recorded" in that segment even though `currentBindingRow` above still shows its real
+    /// summary via `action.summary` regardless of which segment is selected.
     init(matching action: TacitAction?) {
         switch action {
-        case .none, .keystroke: self = .keystroke
+        case .none, .keystroke, .holdKeystroke: self = .keystroke
         case .launchApp: self = .launchApp
         case .openURL: self = .openURL
         case .runShortcut: self = .runShortcut

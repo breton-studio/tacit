@@ -132,10 +132,15 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// and `handleFire(_:)` below reads it on every fired event. No second instance exists
     /// anywhere in the app.
     let mappingStore = MappingStore()
+    /// The live macOS side-effect environment — kept as its own property (not just wrapped inside
+    /// `actionDispatcher`) so M3 Task 9's hold-began/hold-ended paths can call `postKeyDown`/
+    /// `postKeyUp` DIRECTLY, bypassing `ActionDispatcher.dispatch(_:)` entirely (that method's
+    /// `.holdKeystroke` case is only the normal-fire-path fallback — see its doc comment).
+    private let actionEnvironment = LiveActionEnvironment.make()
     /// Routes a fired, bound `TacitAction` to its real macOS side effect. Constructed once with
     /// the live environment — see `handleFire(_:)` for why `dispatch(_:)` itself must never be
     /// called from the main actor.
-    private let actionDispatcher = ActionDispatcher(environment: LiveActionEnvironment.make())
+    private let actionDispatcher: ActionDispatcher
     /// The one HUD panel instance for real gesture fires, shown/errored by `handleFire(_:)`.
     /// (`PopoverView`'s ⌥-debug section keeps its own separate, never-wired `HUDController` for
     /// eyeballing motion manually — see that file's doc comment — so the two never collide.)
@@ -237,6 +242,27 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// ask one question: is Accessibility trusted right now.
     private var enabledKeystrokeBindingExists = false
 
+    /// M3 Task 9: tracks whether a holdable static pose ([`.indexPoint`, `.thumbsUp`, `.victory`])
+    /// is currently being held, independent of whether it's bound to `.holdKeystroke` — see
+    /// `apply(_:generation:timestamp:)`'s doc comment for the full per-frame wiring, and
+    /// `HoldTracker`'s own doc comment for why a stuck-down key is impossible by construction.
+    private var holdTracker = HoldTracker(holdableGestures: [.indexPoint, .thumbsUp, .victory])
+    /// Mirrors `holdTracker`'s own began/ended state — `true` from the frame a `.began` is seen
+    /// through the frame its matching `.ended` is seen, regardless of binding. Used ONLY to decide
+    /// whether to keep extending the arbitration command window each frame (a hold not bound to
+    /// `.holdKeystroke` still deserves the window staying open, since the user is still
+    /// deliberately holding a pose in an armed session either way).
+    private var isHoldActive = false
+    /// The `KeyChord` currently held down via `.holdKeystroke`, or `nil`. Set the instant a hold's
+    /// `.began` triggers a real `postKeyDown` (i.e. the held gesture IS bound to an enabled
+    /// `.holdKeystroke`, and Accessibility is trusted); cleared the instant the matching `.ended`
+    /// triggers the paired `postKeyUp`. Captured at `.began` time rather than re-read from
+    /// `mappingStore` at `.ended` time on purpose: a rebind mid-hold (changing the gesture's
+    /// binding, or disabling it) must still release the EXACT key that went down, never whatever
+    /// the binding says NOW — releasing the wrong key would either leave the real key stuck or
+    /// spuriously release an unrelated one.
+    private var activeHoldChord: KeyChord?
+
     /// Latest arbitration phase seen from the pipeline, kept outside `PipelineCore` so
     /// `recomputeGlyphState()` can be driven by capture-state changes too (which arrive via
     /// Combine, not via a frame).
@@ -256,6 +282,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     init(recorder: FixtureRecorder = FixtureRecorder()) {
         self.recorder = recorder
+        self.actionDispatcher = ActionDispatcher(environment: actionEnvironment)
         let stored = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool
         self.isEnabled = stored ?? true
         let storedHUDEnabled = UserDefaults.standard.object(forKey: Self.hudEnabledDefaultsKey) as? Bool
@@ -374,7 +401,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 // `apply(_:generation:)`.
                 let generation = self.pipelineGeneration
                 let result = await pipeline.process(pixelBuffer: pixelBuffer, timestamp: timestamp)
-                self.apply(result, generation: generation)
+                self.apply(result, generation: generation, timestamp: timestamp)
             }
         }
 
@@ -524,11 +551,31 @@ final class TacitEngine: ObservableObject, EngineUIState {
             }
         }
 
+        // M3 Task 9 ended-path: app quit. `NSApplication.willTerminateNotification` is documented
+        // to fire on the main thread, so — unlike the four observers above, which deliberately
+        // hop via `Task { @MainActor in ... }` because their sources aren't guaranteed main-thread
+        // — this handler runs SYNCHRONOUSLY via `MainActor.assumeIsolated`, not a `Task`: the
+        // whole point is that the final key-up has actually been attempted before this callback
+        // returns and the process exits, and a freshly spawned `Task` this late has no guarantee
+        // of ever getting a turn to run before `exit()` is called. See
+        // `handleApplicationWillTerminate`'s doc comment for the caveats that remain regardless
+        // (e.g. a forced quit/SIGKILL skips this notification entirely).
+        let willTerminateToken = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleApplicationWillTerminate()
+            }
+        }
+
         systemStateObserverTokens = [
             (distributed, lockToken),
             (distributed, unlockToken),
             (workspace, sleepToken),
             (workspace, wakeToken),
+            (NotificationCenter.default, willTerminateToken),
         ]
     }
 
@@ -603,8 +650,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // progress so a later resume starts clean from `.disarmed` rather than momentarily
             // flashing whatever phase (e.g. `.armed`) was in effect right before the pause.
             // Bumping the generation here — before the reset actually completes on the pipeline
-            // actor — is what lets `apply(_:generation:)` deterministically discard any frame
-            // already in flight, no matter when it resolves.
+            // actor — is what lets `apply(_:generation:timestamp:)` deterministically discard any
+            // frame already in flight, no matter when it resolves.
             pipelineGeneration += 1
             lastArbitrationState = .disarmed
             // No live frame is coming while capture is stopped: a stale preview candidate must not
@@ -613,6 +660,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
             if let pipeline {
                 Task { await pipeline.reset() }
             }
+            // M3 Task 9 ended-path: capture stopping is THE chokepoint for a hold ending on
+            // capture pause/unavailable, screen lock, display sleep, and `isEnabled` off — every
+            // one of those funnels into `capture.pause(...)` and lands here (see
+            // `endActiveHoldIfNeeded()`'s doc comment for the complete ended-path inventory). No
+            // more frames arrive once capture stops, so this is the ONLY place those paths can
+            // still end a hold — the per-frame check in `apply(_:generation:timestamp:)` never
+            // gets another chance to run.
+            endActiveHoldIfNeeded()
         }
         recomputeGlyphState()
     }
@@ -685,7 +740,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// `process(...)` call was *submitted*) no longer matches `pipelineGeneration` — meaning a
     /// reset happened while this frame was in flight, so its arbitration state is stale and must
     /// be dropped rather than published. See `pipelineGeneration`'s doc comment.
-    private func apply(_ result: PipelineCore.Result, generation: Int) {
+    private func apply(_ result: PipelineCore.Result, generation: Int, timestamp: TimeInterval) {
         guard generation == pipelineGeneration else { return }
 
         if let frame = result.frame {
@@ -710,6 +765,143 @@ final class TacitEngine: ObservableObject, EngineUIState {
         } else {
             recomputeGlyphState()
         }
+
+        // M3 Task 9: hold-gesture lifecycle. Fed every frame with the fired event (if any — for
+        // the v1 holdable set, [.indexPoint, .thumbsUp, .victory], that's always a plain static
+        // fire, never a momentary one) and the raw static candidate, regardless of arbitration
+        // state. A `.began` for a gesture NOT bound to `.holdKeystroke` is deliberately ignored by
+        // `handleHoldEvent` — the normal fire path above already handled that fire completely; a
+        // hold's own bookkeeping (`isHoldActive`) still tracks it purely so the window-extension
+        // logic below keeps working for it too.
+        if let holdEvent = holdTracker.ingest(fired: result.event, candidate: result.staticCandidate, at: timestamp) {
+            isHoldActive = (holdEvent.phase == .began)
+            handleHoldEvent(holdEvent)
+        }
+
+        if isHoldActive {
+            if case .armed = result.arbitrationState {
+                // Keep the command window from expiring out from under the hold — see
+                // `ArbitrationEngine.extendWindow(at:)`'s doc comment. Fire-and-forget onto the
+                // pipeline actor (same pattern as `setLowLight`/`setSensitivity` elsewhere in this
+                // file); `extendWindow` itself is a no-op if arbitration is no longer armed by the
+                // time this runs, so a benign race against a concurrent disarm is harmless.
+                Task { [pipeline] in
+                    await pipeline?.extendArbitrationWindow(at: timestamp)
+                }
+            } else {
+                // M3 Task 9 ended-path: disarm / command-window expiry. Arbitration is no longer
+                // `.armed` on a frame where a hold was still active — there's no window left to
+                // extend, and no armed session left for an eventual key-up to make sense inside.
+                // End the hold NOW rather than waiting for `handleCaptureStateChange`'s coarser
+                // chokepoint (capture is still running here; that chokepoint would never fire).
+                endActiveHoldIfNeeded()
+            }
+        }
+    }
+
+    // MARK: - Hold-gesture lifecycle (M3 Task 9)
+
+    /// Routes a `HoldTracker` phase transition to its dispatch/HUD side effects.
+    private func handleHoldEvent(_ event: GestureHoldEvent) {
+        switch event.phase {
+        case .began: handleHoldBegan(event)
+        case .ended: handleHoldEnded(event)
+        }
+    }
+
+    /// A holdable gesture just began being held. Looks up its CURRENT binding: if it's
+    /// enabled and bound to `.holdKeystroke`, posts the key-down (off-main, mirroring
+    /// `handleFire(_:)`'s own off-main dispatch) and shows the HUD's persistent "holding" chip.
+    /// Any other binding (disabled, unbound, or bound to a different action kind) is a complete
+    /// no-op here — the gesture's normal fire already happened via `handleFire(_:)` in
+    /// `apply(_:generation:timestamp:)`, and `activeHoldChord` staying `nil` is exactly what makes
+    /// `handleHoldEnded(_:)` correctly do nothing when this same hold eventually ends.
+    private func handleHoldBegan(_ event: GestureHoldEvent) {
+        let binding = mappingStore.binding(for: event.gesture)
+        guard binding.enabled, let action = binding.action, case .holdKeystroke(let chord) = action else {
+            return
+        }
+
+        guard actionEnvironment.isAccessibilityTrusted() else {
+            if isHUDEnabled {
+                hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
+            }
+            return
+        }
+
+        activeHoldChord = chord
+        let environment = actionEnvironment
+        // Off-main for the same reason `handleFire(_:)` dispatches off-main: `postKeyDown`
+        // synchronously posts a `CGEvent`, which must never risk stalling the main actor.
+        Task.detached {
+            _ = environment.postKeyDown(chord)
+        }
+        if isHUDEnabled {
+            // `HUDController.showHold` renders "<Gesture> → holding <label>" — deliberately the
+            // bare key label (chord.display, "Fn" for keyCode 63), NOT `action.summary` (which is
+            // already "Hold ⌘Space"/"Hold Fn"): prefixing "holding " onto THAT would double up
+            // into "holding Hold Fn".
+            let keyLabel = chord.keyCode == 63 ? "Fn" : chord.display
+            hudController.showHold(gesture: event.gesture, actionSummary: keyLabel, frame: latestFrame)
+        }
+    }
+
+    /// A hold just ended (pose lost, or forced via `endActiveHoldIfNeeded()`/
+    /// `handleApplicationWillTerminate()`). Posts the paired key-up ONLY if a matching key-down
+    /// was actually sent (`activeHoldChord != nil`) — see that property's doc comment for why the
+    /// captured chord, not a fresh binding lookup, is what gets released. Always tells the HUD to
+    /// end the hold chip (idempotent/harmless if nothing was showing).
+    private func handleHoldEnded(_ event: GestureHoldEvent) {
+        defer { hudController.endHold() }
+        guard let chord = activeHoldChord else { return }
+        activeHoldChord = nil
+        let environment = actionEnvironment
+        Task.detached {
+            _ = environment.postKeyUp(chord)
+        }
+    }
+
+    /// The single chokepoint every non-pose-based hold-ended path routes through (brief: "a
+    /// stuck-down Fn key is the failure mode to make impossible"). Resets `holdTracker`
+    /// unconditionally; if a hold was actually active, ends it exactly like an organic pose-loss
+    /// `.ended` would (posts the paired key-up off-main only if a real key-down was sent, and
+    /// dismisses the HUD's hold chip). Safe to call when no hold is active — a no-op.
+    ///
+    /// **Every place this is called, and why (the stuck-key audit):**
+    ///  - `apply(_:generation:timestamp:)` — disarm / command-window expiry: any frame where
+    ///    `result.arbitrationState` is no longer `.armed` while a hold was active.
+    ///  - `handleCaptureStateChange` — capture pause/unavailable, PLUS screen lock, display sleep,
+    ///    and the `isEnabled` master toggle going off, since all three of those pause capture
+    ///    (`pauseIfRunning`/`handleEnabledChange`) and land here as the same state transition; this
+    ///    is also the only place that can still act once frames stop arriving entirely.
+    ///  - `handleApplicationWillTerminate` — app quit — calls this too (via the same reset), then
+    ///    additionally posts the key-up SYNCHRONOUSLY rather than through `handleHoldEnded`'s
+    ///    off-main `Task.detached`, since a detached Task has no guarantee of getting a turn to
+    ///    run before the process actually exits. See that method's doc comment.
+    ///  - Pose loss itself (the organic, expected end of a hold) does NOT go through this method —
+    ///    it's handled directly by `holdTracker.ingest`'s own missing-frame count inside
+    ///    `apply(_:generation:timestamp:)`, which calls `handleHoldEvent(_:)`.
+    private func endActiveHoldIfNeeded() {
+        isHoldActive = false
+        guard let event = holdTracker.reset() else { return }
+        handleHoldEnded(event)
+    }
+
+    /// App-quit ended-path (brief: "applicationWillTerminate via NSApplication notification").
+    /// Unlike `endActiveHoldIfNeeded()`'s normal off-main dispatch, this posts the final key-up
+    /// SYNCHRONOUSLY: by the time this notification fires there is no "later" for a freshly
+    /// spawned `Task.detached` to run in before the process calls `exit()`, so a detached task
+    /// here would be a best-effort release with no actual guarantee. This is still best-effort in
+    /// the sense that macOS doesn't guarantee this notification fires at all (e.g. a forced quit/
+    /// SIGKILL skips it entirely) — a real stuck key from that class of exit is a known, documented
+    /// limitation outside this method's control, not something any user-space code can prevent.
+    private func handleApplicationWillTerminate() {
+        isHoldActive = false
+        guard holdTracker.reset() != nil else { return }
+        defer { hudController.endHold() }
+        guard let chord = activeHoldChord else { return }
+        activeHoldChord = nil
+        _ = actionEnvironment.postKeyUp(chord)
     }
 
     // MARK: - Closing the loop: gesture event → dispatched action → HUD (Task 21)
@@ -896,6 +1088,13 @@ private actor PipelineCore {
         /// Raw candidate for Task 19's preview strip, bypassing arbitration entirely — nil unless
         /// `previewActive`. See `process(pixelBuffer:timestamp:)`'s doc comment for precedence.
         var previewCandidate: GestureCandidate?
+        /// M3 Task 9: the raw static-pose candidate this frame — i.e. `classifier.classify`'s
+        /// result, the SAME value fed into `arbitration.ingest` above, BEFORE any clutch-gating —
+        /// added so `TacitEngine` can feed its `HoldTracker` the pose that's currently classifying
+        /// regardless of arbitration state (a hold's persistence check cares whether the pose is
+        /// still there, not whether the clutch happens to be armed). `nil` on any frame with no
+        /// hand, or where the classifier didn't match any static pose.
+        var staticCandidate: GestureCandidate?
     }
 
     /// Runs one captured frame through detection → classification → arbitration. Callers are
@@ -997,7 +1196,8 @@ private actor PipelineCore {
             frame: frame,
             arbitrationState: arbitration.state,
             event: event,
-            previewCandidate: previewCandidate
+            previewCandidate: previewCandidate,
+            staticCandidate: candidate
         )
     }
 
@@ -1005,6 +1205,14 @@ private actor PipelineCore {
     /// briefly show stale progress from before the pause.
     func reset() {
         arbitration.reset()
+    }
+
+    /// M3 Task 9: forwards to `ArbitrationEngine.extendWindow(at:)`, called by `TacitEngine` once
+    /// per frame while its `HoldTracker` reports a hold is active — see that method's doc comment.
+    /// An actor method (rather than exposing `arbitration` itself) purely to keep `arbitration`
+    /// confined to this actor's executor, same as every other mutation here.
+    func extendArbitrationWindow(at now: TimeInterval) {
+        arbitration.extendWindow(at: now)
     }
 
     /// M3 Task 6: called by `TacitEngine` on every low-light hysteresis FLIP (not on every luma

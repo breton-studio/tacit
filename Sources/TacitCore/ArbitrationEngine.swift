@@ -188,6 +188,21 @@ public final class ArbitrationEngine {
         return GestureEvent(gesture: gesture, timestamp: now)
     }
 
+    /// M3 Task 9: called by an owning engine (`TacitEngine`) once per frame while a `HoldTracker`
+    /// hold is active, so the command window can never expire out from under a held gesture — a
+    /// "point to speak" dictation session can run far longer than `tuning.commandWindow` without
+    /// silently disarming mid-hold (which would leave the eventual key-up with no armed session
+    /// to route through). No-op unless `state` is currently `.armed`: a hold only ever begins
+    /// while armed (see `HoldTracker.ingest`'s doc comment — `began` requires a `fired` event,
+    /// which itself only ever comes from an armed fire), so a call arriving while `.disarmed`/
+    /// `.arming` means the window has already lapsed and there's nothing left to extend — the
+    /// caller's own ended-path handling (not this method) is what reconciles that. Touches only
+    /// `windowEndsAt`; never perturbs the cooldown ledger, debounce, or arming bookkeeping.
+    public func extendWindow(at now: TimeInterval) {
+        guard case .armed = state else { return }
+        state = .armed(windowEndsAt: now + tuning.commandWindow)
+    }
+
     // MARK: - Disarmed / arming phase (the clutch itself)
 
     private func processClutch(_ candidate: GestureCandidate?, now: TimeInterval) {

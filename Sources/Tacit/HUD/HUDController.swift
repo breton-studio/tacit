@@ -98,7 +98,54 @@ final class HUDController {
         present(.error(message: message), celebratory: false)
     }
 
+    /// M3 Task 9: shows (or retargets) the HUD for an ACTIVE hold — "<Gesture> → holding
+    /// <summary>"-style copy (reuses `.gesture`'s existing "<name> → <action>" line, just with
+    /// `actionSummary` prefixed) — and, critically, does NOT schedule the usual auto-dismiss:
+    /// the chip stays up for as long as the hold lasts. Pairs with `endHold()`, which the caller
+    /// (`TacitEngine`) is responsible for calling exactly once the hold actually ends — see that
+    /// type's ended-path inventory for why every hold's `began` is guaranteed a matching `ended`.
+    func showHold(gesture: GestureID, actionSummary: String, frame: LandmarkFrame?) {
+        let entry = GestureCatalog.entry(for: gesture)
+        presentHold(
+            .gesture(
+                displayName: entry.displayName,
+                actionSummary: "holding \(actionSummary)",
+                frame: frame ?? entry.cannedFrame
+            )
+        )
+    }
+
+    /// Dismisses a hold shown via `showHold(...)`, via the exact same standard out motion
+    /// (`hudOut`) a normal auto-dismiss uses. A no-op if nothing is currently on screen — safe to
+    /// call defensively from an ended-path that isn't sure whether a hold chip is actually up.
+    func endHold() {
+        guard isPanelOnScreen else { return }
+        dwellTask?.cancel()
+        dwellTask = nil
+        dismiss(token: currentToken)
+    }
+
     // MARK: - Presentation
+
+    /// Like `present(_:celebratory:)`, but deliberately never calls `scheduleDismiss` — the hold
+    /// chip stays up until `endHold()` says otherwise, not on any fixed dwell timer.
+    private func presentHold(_ content: HUDContent) {
+        ensurePanel()
+        dwellTask?.cancel()
+        dwellTask = nil
+        currentToken = UUID()
+
+        state.content = content
+        positionPanel()
+
+        if isPanelOnScreen {
+            retarget()
+        } else {
+            panel?.orderFrontRegardless()
+            isPanelOnScreen = true
+            enterFresh(celebratory: false)
+        }
+    }
 
     private func present(_ content: HUDContent, celebratory: Bool) {
         ensurePanel()

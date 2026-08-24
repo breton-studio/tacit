@@ -504,3 +504,60 @@ func feed(
     let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: t)
     #expect(e.ingestPreDebounced(candidate, at: t) == GestureEvent(gesture: .thumbIndexTap, timestamp: t))
 }
+
+// MARK: - extendWindow (M3 Task 9)
+
+@Test func extendWindowExtendsTheCommandWindowWhileArmed() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let originalWindowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    let extendAt = originalWindowEndsAt - 0.1 // just before the window would otherwise expire
+    e.extendWindow(at: extendAt)
+
+    guard case .armed(let extendedWindowEndsAt) = e.state else { Issue.record("expected still armed"); return }
+    #expect(extendedWindowEndsAt == extendAt + ArbitrationTuning().commandWindow)
+    #expect(extendedWindowEndsAt > originalWindowEndsAt)
+}
+
+@Test func extendWindowIsANoOpWhenDisarmed() {
+    let e = ArbitrationEngine()
+    #expect(e.state == .disarmed)
+    e.extendWindow(at: 5.0)
+    #expect(e.state == .disarmed)
+}
+
+@Test func extendWindowIsANoOpWhileArming() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 3) // mid-arming, not yet armed
+    guard case .arming = e.state else { Issue.record("expected arming, got \(e.state)"); return }
+    e.extendWindow(at: 1.0)
+    guard case .arming = e.state else {
+        Issue.record("extendWindow must not arm the clutch while arming, got \(e.state)")
+        return
+    }
+}
+
+@Test func extendWindowKeepsTheWindowOpenPastItsOriginalExpiry() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let originalWindowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    // Extend repeatedly, well before each successive expiry, simulating a long hold.
+    var t = originalWindowEndsAt - 0.1
+    for _ in 0..<20 {
+        e.extendWindow(at: t)
+        t += ArbitrationTuning().commandWindow - 1.0
+    }
+    // One final extension right before feeding, so the fresh debounce below has the full
+    // `commandWindow` of margin to complete in (rather than whatever sliver was left after the
+    // loop's last step) — the loop above is what proves repeated extension survives well past
+    // the original expiry; this final call just sets up a clean window for the assertion itself.
+    e.extendWindow(at: t)
+
+    // Long after the ORIGINAL window would have expired, a fresh candidate still fires — the
+    // window never lapsed because it kept being extended.
+    let events = feed(e, gesture: .victory, conf: 0.9, from: t, frames: 5)
+    #expect(!events.isEmpty)
+    #expect(t > originalWindowEndsAt + 10) // sanity: genuinely well past the original expiry
+}

@@ -4,8 +4,9 @@ import Testing
 
 // MARK: - TacitAction
 
-@Test func requiresAccessibilityIsTrueOnlyForKeystroke() {
+@Test func requiresAccessibilityIsTrueOnlyForKeystrokeAndHoldKeystroke() {
     #expect(TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command])).requiresAccessibility == true)
+    #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).requiresAccessibility == true)
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").requiresAccessibility == false)
     #expect(TacitAction.openURL("superwhisper://record").requiresAccessibility == false)
     #expect(TacitAction.runShortcut(name: "Focus").requiresAccessibility == false)
@@ -13,14 +14,20 @@ import Testing
 
 @Test func summaryDescribesEachAction() {
     #expect(TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command])).summary == "⌘C")
+    #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 49, modifiers: [.command])).summary == "Hold ⌘Space")
     #expect(TacitAction.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty").summary == "Open Ghostty")
     #expect(TacitAction.openURL("superwhisper://record").summary == "superwhisper://record")
     #expect(TacitAction.runShortcut(name: "Focus").summary == "Shortcut: Focus")
 }
 
+@Test func holdKeystrokeSummarySpecialCasesFnKeyCode63() {
+    #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).summary == "Hold Fn")
+}
+
 @Test func tacitActionCodableRoundTrips() throws {
     let actions: [TacitAction] = [
         .keystroke(KeyChord(keyCode: 8, modifiers: [.command])),
+        .holdKeystroke(KeyChord(keyCode: 63, modifiers: [])),
         .launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"),
         .openURL("superwhisper://record"),
         .runShortcut(name: "Focus"),
@@ -32,6 +39,16 @@ import Testing
     }
 }
 
+/// M3 Task 9: an old (pre-`.holdKeystroke`) encoded `.keystroke` payload must still decode fine —
+/// adding a new enum case to a synthesized-Codable enum never perturbs decoding of payloads from
+/// cases that already existed.
+@Test func oldKeystrokePayloadStillDecodesAfterHoldKeystrokeWasAdded() throws {
+    let original = TacitAction.keystroke(KeyChord(keyCode: 8, modifiers: [.command]))
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(TacitAction.self, from: data)
+    #expect(decoded == original)
+}
+
 // MARK: - ActionDispatcher
 
 /// A spy environment that records which closures were invoked and lets each call succeed or
@@ -39,21 +56,32 @@ import Testing
 /// unchecked Sendable conformance is safe here.
 private final class Spy: @unchecked Sendable {
     var postKeystrokeCalls: [KeyChord] = []
+    /// Every `postKeyDown`/`postKeyUp` call, in order, tagged by direction — a single merged log
+    /// (rather than two separate arrays) so tests can assert ORDERING (down strictly before up)
+    /// as well as which chord each call carried.
+    var keyDirectionCalls: [(direction: String, chord: KeyChord)] = []
     var launchAppCalls: [String] = []
     var openURLCalls: [String] = []
     var runShortcutCalls: [String] = []
     var isAccessibilityTrustedCallCount = 0
 
     var postKeystrokeResult = true
+    var postKeyDownResult = true
+    var postKeyUpResult = true
     var launchAppResult = true
     var openURLResult = true
     var runShortcutResult = true
     var isAccessibilityTrustedResult = true
+
+    var postKeyDownCalls: [KeyChord] { keyDirectionCalls.filter { $0.direction == "down" }.map(\.chord) }
+    var postKeyUpCalls: [KeyChord] { keyDirectionCalls.filter { $0.direction == "up" }.map(\.chord) }
 }
 
 private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     ActionDispatcher(environment: ActionEnvironment(
         postKeystroke: { chord in spy.postKeystrokeCalls.append(chord); return spy.postKeystrokeResult },
+        postKeyDown: { chord in spy.keyDirectionCalls.append((direction: "down", chord: chord)); return spy.postKeyDownResult },
+        postKeyUp: { chord in spy.keyDirectionCalls.append((direction: "up", chord: chord)); return spy.postKeyUpResult },
         launchApp: { bundleID in spy.launchAppCalls.append(bundleID); return spy.launchAppResult },
         openURL: { string in spy.openURLCalls.append(string); return spy.openURLResult },
         runShortcut: { name in spy.runShortcutCalls.append(name); return spy.runShortcutResult },
@@ -141,4 +169,59 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     spy.runShortcutResult = false
     let outcome = makeDispatcher(spy).dispatch(.runShortcut(name: "Focus"))
     #expect(outcome == .failed("Couldn't run Shortcut 'Focus'"))
+}
+
+// MARK: - .holdKeystroke's normal-fire-path fallback (M3 Task 9)
+
+/// A `.holdKeystroke` dispatched through the NORMAL fire path (i.e. `TacitEngine.handleFire`, for
+/// a momentary gesture with no `HoldTracker` hold behind it — see `ActionDispatcher.dispatch`'s
+/// `.holdKeystroke` case doc comment) must perform a full press: both halves, down and up.
+@Test func dispatchHoldKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() {
+    let spy = Spy()
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    #expect(outcome == .performed)
+    #expect(spy.postKeyDownCalls == [chord])
+    #expect(spy.postKeyUpCalls == [chord])
+    #expect(spy.postKeystrokeCalls.isEmpty)
+    #expect(spy.launchAppCalls.isEmpty)
+    #expect(spy.openURLCalls.isEmpty)
+    #expect(spy.runShortcutCalls.isEmpty)
+}
+
+/// Ordering matters: the key-down MUST be posted before the key-up (a full press with the halves
+/// reversed is nonsensical and could confuse a listening app).
+@Test func dispatchHoldKeystrokeFullPressPostsDownBeforeUp() {
+    let spy = Spy()
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    _ = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    #expect(spy.keyDirectionCalls.map(\.direction) == ["down", "up"])
+}
+
+@Test func dispatchHoldKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
+    let spy = Spy()
+    spy.isAccessibilityTrustedResult = false
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    #expect(outcome == .needsAccessibility)
+    #expect(spy.keyDirectionCalls.isEmpty)
+}
+
+@Test func dispatchHoldKeystrokeFailsWhenPostKeyDownFails() {
+    let spy = Spy()
+    spy.postKeyDownResult = false
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    #expect(outcome == .failed("Couldn't press key 0x3F"))
+    // The up half is never attempted once the down half itself failed.
+    #expect(spy.postKeyUpCalls.isEmpty)
+}
+
+@Test func dispatchHoldKeystrokeFailsWhenPostKeyUpFails() {
+    let spy = Spy()
+    spy.postKeyUpResult = false
+    let chord = KeyChord(keyCode: 63, modifiers: [])
+    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    #expect(outcome == .failed("Couldn't press key 0x3F"))
+    #expect(spy.postKeyDownCalls == [chord])
 }

@@ -5,6 +5,15 @@ import Foundation
 /// `LiveActionEnvironment`); tests supply spies.
 public struct ActionEnvironment: Sendable {
     public var postKeystroke: @Sendable (KeyChord) -> Bool
+    /// M3 Task 9: posts ONLY the key-down half of `chord` — the paired `postKeyUp` is a SEPARATE
+    /// call the caller is responsible for making later. Used by `TacitEngine`'s hold-began path
+    /// directly (bypassing `ActionDispatcher.dispatch(_:)`), and by `dispatch(_:)`'s own
+    /// `.holdKeystroke` full-press fallback (down, then up).
+    public var postKeyDown: @Sendable (KeyChord) -> Bool
+    /// M3 Task 9: posts ONLY the key-up half of `chord`. See `postKeyDown`'s doc comment — every
+    /// `postKeyDown` this environment is asked to perform must eventually be paired with exactly
+    /// one `postKeyUp` of the same chord, or a key is left stuck down.
+    public var postKeyUp: @Sendable (KeyChord) -> Bool
     public var launchApp: @Sendable (String) -> Bool
     public var openURL: @Sendable (String) -> Bool
     public var runShortcut: @Sendable (String) -> Bool
@@ -12,12 +21,16 @@ public struct ActionEnvironment: Sendable {
 
     public init(
         postKeystroke: @Sendable @escaping (KeyChord) -> Bool,
+        postKeyDown: @Sendable @escaping (KeyChord) -> Bool,
+        postKeyUp: @Sendable @escaping (KeyChord) -> Bool,
         launchApp: @Sendable @escaping (String) -> Bool,
         openURL: @Sendable @escaping (String) -> Bool,
         runShortcut: @Sendable @escaping (String) -> Bool,
         isAccessibilityTrusted: @Sendable @escaping () -> Bool
     ) {
         self.postKeystroke = postKeystroke
+        self.postKeyDown = postKeyDown
+        self.postKeyUp = postKeyUp
         self.launchApp = launchApp
         self.openURL = openURL
         self.runShortcut = runShortcut
@@ -28,8 +41,8 @@ public struct ActionEnvironment: Sendable {
 /// The result of attempting to dispatch a `TacitAction`.
 public enum DispatchOutcome: Equatable, Sendable {
     case performed
-    /// A `.keystroke` couldn't be attempted because Accessibility permission isn't granted.
-    /// `postKeystroke` is deliberately not called in this case.
+    /// A `.keystroke`/`.holdKeystroke` couldn't be attempted because Accessibility permission
+    /// isn't granted. Neither `postKeystroke` nor `postKeyDown`/`postKeyUp` is called in this case.
     case needsAccessibility
     /// A plain-verb user-facing message, e.g. "Couldn't run Shortcut 'Focus'".
     case failed(String)
@@ -48,6 +61,24 @@ public struct ActionDispatcher: Sendable {
         case .keystroke(let chord):
             guard environment.isAccessibilityTrusted() else { return .needsAccessibility }
             guard environment.postKeystroke(chord) else {
+                return .failed("Couldn't press \(chord.display)")
+            }
+            return .performed
+
+        case .holdKeystroke(let chord):
+            // M3 Task 9: `.holdKeystroke`'s intended lifecycle (key-down on hold-begin, key-up on
+            // hold-end) is driven by `TacitEngine` calling `postKeyDown`/`postKeyUp` DIRECTLY —
+            // this branch is never reached on that path. It exists purely as the FALLBACK for a
+            // plain *fire* of a gesture bound to `.holdKeystroke` with no hold support behind it
+            // (e.g. a momentary gesture like a tap, which can never produce a `HoldTracker`
+            // began/ended pair): dispatched through this normal fire path, it performs a full
+            // press — down, then up — so the binding still does SOMETHING sensible rather than
+            // silently posting a key-down with no matching key-up.
+            guard environment.isAccessibilityTrusted() else { return .needsAccessibility }
+            guard environment.postKeyDown(chord) else {
+                return .failed("Couldn't press \(chord.display)")
+            }
+            guard environment.postKeyUp(chord) else {
                 return .failed("Couldn't press \(chord.display)")
             }
             return .performed
