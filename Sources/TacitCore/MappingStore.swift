@@ -209,7 +209,7 @@ public final class MappingStore: ObservableObject {
 
     /// The revision `defaultBindings()` currently represents. Bump it and append a
     /// `DefaultsRevision` whenever a default VALUE changes for existing users.
-    public static let currentDefaultsRevision = 4
+    public static let currentDefaultsRevision = 5
 
     /// `UserDefaults` key holding the revision an install has been topped up to (Int).
     static let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -278,6 +278,24 @@ public final class MappingStore: ObservableObject {
                 new: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])))
             ),
         ]),
+        // 2026-08-24 ruling ("index-finger-up pose double-fires indexPoint AND
+        // thumbRingPinkyTap — the thumb rests on the ring/pinky in that exact pose, so the two
+        // gestures physically overlap"): a `.toggleKeystroke` bound to `thumbRingPinkyTap` can
+        // never be told apart from `indexPoint`'s hold-to-dictate, so hands-free toggle moves
+        // off it entirely, onto `victory` — a physically distinct pose that can't be confused
+        // with a pointed index finger. `thumbRingPinkyTap` ships disabled with no suggested
+        // action; `victory` picks up exactly the `.toggleKeystroke(Fn)` binding
+        // `thumbRingPinkyTap` used to carry.
+        DefaultsRevision(revision: 5, changes: [
+            .victory: (
+                old: GestureBinding(enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control]))),
+                new: GestureBinding(enabled: true, action: .toggleKeystroke(fnChord))
+            ),
+            .thumbRingPinkyTap: (
+                old: GestureBinding(enabled: true, action: .toggleKeystroke(fnChord)),
+                new: GestureBinding(enabled: false, action: nil)
+            ),
+        ]),
     ]
 
     /// The revision this install was last topped up to: the Int key if present; else 2 if the
@@ -335,10 +353,11 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6, defaults revision 4 — the 2026-08-24 app-switch ruling on
-    /// top of the same-day workhorse remap): nine enabled user commands, the two reserved
-    /// clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for continuous
-    /// gestures with no discrete action yet) for everything else.
+    /// The factory bindings (spec §3.6, defaults revision 5 — the 2026-08-24 ring/pinky-tap-
+    /// overlap ruling on top of the same-day app-switch ruling and workhorse remap): nine enabled
+    /// user commands, the two reserved clutch/disarm gestures, and sensible-but-disabled
+    /// suggestions (or `nil`, for continuous gestures with no discrete action yet) for everything
+    /// else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
@@ -357,16 +376,23 @@ public final class MappingStore: ObservableObject {
         )
 
         // Enabled — M3 Task 11's workflow trio, relocated onto workhorses by the 2026-08-24
-        // remap: text-field focus (thumbsUp), hold-to-dictate (indexPoint), toggle-dictate
-        // (thumbRingPinkyTap). App-switching itself moved off victory/⌘Tab onto swipeRight/
-        // swipeLeft below (defaults revision 4) — see those bindings' comments.
+        // remap: text-field focus (thumbsUp), hold-to-dictate (indexPoint). Toggle-dictate
+        // (defaults revision 5) moved off `thumbRingPinkyTap` onto `victory` below — the
+        // index-finger-up pose that fires `indexPoint` also fires `thumbRingPinkyTap` (the thumb
+        // rests on the ring/pinky in that pose), so a toggle bound there could never be told
+        // apart from indexPoint's hold. App-switching itself moved off victory/⌘Tab onto
+        // swipeRight/swipeLeft below (defaults revision 4) — see those bindings' comments.
         bindings[.thumbsUp] = GestureBinding(enabled: true, action: .focusTextInput)
         bindings[.indexPoint] = GestureBinding(
             // Fn (keyCode 63) — Wispr Flow's stock hold-to-dictate hotkey.
             enabled: true, action: .holdKeystroke(KeyChord(keyCode: 63, modifiers: []))
         )
-        bindings[.thumbRingPinkyTap] = GestureBinding(
-            // Toggle Fn — hands-free dictation.
+        // Toggle Fn — hands-free dictation. Defaults revision 5: moved here from
+        // `thumbRingPinkyTap` (see the comment above) onto a pose that can't be confused with
+        // indexPoint's hold-to-dictate. `TacitEngine.holdableGestures` routes this toggle through
+        // the hold lifecycle (fires once per pose onset) rather than the repeat-firing plain
+        // fire path, since `victory` is itself a holdable pose.
+        bindings[.victory] = GestureBinding(
             enabled: true, action: .toggleKeystroke(KeyChord(keyCode: 63, modifiers: []))
         )
 
@@ -381,13 +407,9 @@ public final class MappingStore: ObservableObject {
         bindings[.swipeRight] = GestureBinding(enabled: true, action: .switchApp(.next))
         bindings[.swipeLeft] = GestureBinding(enabled: true, action: .switchApp(.previous))
 
-        // Disabled — defaults revision 4: freed up by app-switching's move onto swipeRight/
-        // swipeLeft above; ⌃Tab (not ⌘Tab — that would summon the system switcher, exactly what
-        // this feature exists to avoid) is left as a suggestion for anyone who wants victory
-        // bound to something again.
-        bindings[.victory] = GestureBinding(
-            enabled: false, action: .keystroke(KeyChord(keyCode: 48, modifiers: [.control])) // ⌃Tab suggestion
-        )
+        // Disabled, no suggested action — defaults revision 5: freed up by toggle-dictate's move
+        // onto `victory` above (see that binding's comment for why the two poses overlapped).
+        bindings[.thumbRingPinkyTap] = GestureBinding(enabled: false, action: nil)
 
         // Disabled, with a suggested action from the ergonomics report's mapping column.
         bindings[.swipeUp] = GestureBinding(

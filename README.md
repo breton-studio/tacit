@@ -29,8 +29,8 @@ requests camera permission at launch, alongside a short first-run onboarding: Ac
 permission, learning the clutch, and a look at the preset gesture bindings you start with — among
 them the workflow defaults: a hand swipe right/left flips to the next/previous app directly (no
 ⌘Tab, no switcher UI), a thumbs-up focuses the nearest text field, holding a point gesture holds
-down Fn — Wispr Flow's stock push-to-talk hotkey — and a thumb-to-ring/pinky tap *toggles* Fn for
-hands-free dictation until you tap again (the menu bar popover shows a "Release" row while it's
+down Fn — Wispr Flow's stock push-to-talk hotkey — and a victory (✌️) sign *toggles* Fn for
+hands-free dictation until you make it again (the menu bar popover shows a "Release" row while it's
 held). Copy, paste, undo and redo ride the thumb taps and thumb swipes. Everything else ships off;
 every binding is rebindable in the Library, where a keystroke can be delivered as a press, a hold,
 or a toggle. The

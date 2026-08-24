@@ -1014,12 +1014,15 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
     }
 
-    /// A holdable gesture just began being held. Looks up its CURRENT binding: if it's
-    /// enabled and bound to `.holdKeystroke`, posts the key-down and shows the HUD's persistent
-    /// "holding" chip. Any other binding (disabled, unbound, or bound to a different action kind)
-    /// is a complete no-op here — the gesture's normal fire already happened via `handleFire(_:)`
-    /// in `apply(_:generation:timestamp:)`, and `activeHoldChord` staying `nil` is exactly what
-    /// makes `handleHoldEnded(_:)` correctly do nothing when this same hold eventually ends.
+    /// A holdable gesture just began being held. Looks up its CURRENT binding: if it's enabled
+    /// and bound to `.holdKeystroke`, posts the key-down and shows the HUD's persistent "holding"
+    /// chip; if it's enabled and bound to `.toggleKeystroke` (2026-08-24 ring/pinky-tap-overlap
+    /// ruling), fires the toggle exactly once via `handleToggleFire(gesture:chord:)` instead — see
+    /// that branch below for why. Any other binding (disabled, unbound, or bound to a momentary
+    /// action kind) is a complete no-op here — the gesture's normal fire already happened via
+    /// `handleFire(_:)` in `apply(_:generation:timestamp:)`, and `activeHoldChord` staying `nil`
+    /// is exactly what makes `handleHoldEnded(_:)` correctly do nothing when this same hold
+    /// eventually ends.
     ///
     /// **Post-review fix (structural key ordering):** `postKeyDown` is called SYNCHRONOUSLY, on
     /// the main actor — deliberately NOT `Task.detached`, unlike `handleFire(_:)`'s dispatch of a
@@ -1041,9 +1044,30 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// gets a turn, so down always happens before up, in every interleaving.
     private func handleHoldBegan(_ event: GestureHoldEvent) {
         let binding = mappingStore.binding(for: event.gesture)
-        guard binding.enabled, let action = binding.action, case .holdKeystroke(let chord) = action else {
+        guard binding.enabled, let action = binding.action else { return }
+
+        // 2026-08-24 ring/pinky-tap-overlap ruling: a HOLDABLE gesture bound to
+        // `.toggleKeystroke` (e.g. victory, defaults revision 5) toggles exactly ONCE, right here
+        // on the pose's onset — never from `handleFire(_:)`, which would otherwise re-fire the
+        // toggle roughly every ~0.9s for as long as the pose is held (see `handleFire(_:)`'s
+        // matching early-return guard for the full repeat-fire hazard) and flip the latch
+        // on->off->on while the user simply holds the pose. Delegates to the SAME
+        // `handleToggleFire(gesture:chord:)` a momentary toggle-bound gesture's plain fire uses,
+        // so engage/release/swap, the Accessibility gate, and the HUD line all behave identically
+        // either way. Deliberately does NOT set `activeHoldChord`/call `postKeyDown`/call
+        // `hudController.showHold` — those are the `.holdKeystroke` hold-chip machinery below,
+        // which a toggle has no use for: `handleToggleFire` already posted its own key event and
+        // shows its own "<key> on/off" HUD line. Leaving `activeHoldChord` nil here is exactly
+        // what makes `handleHoldEnded(_:)` correctly do nothing when this hold ends — the latch,
+        // not the hold, owns the eventual release (releasing on a second toggle, or via any of
+        // `releaseLatchIfNeeded()`'s other chokepoints), same mirror-image shape as `.holdKeystroke`'s
+        // own Ruling 3 guard just below handles for a hold already owning an already-latched chord.
+        if case .toggleKeystroke(let chord) = action {
+            handleToggleFire(gesture: event.gesture, chord: chord)
             return
         }
+
+        guard case .holdKeystroke(let chord) = action else { return }
 
         // Ruling 3: a hold of a chord that's already latched is a no-op — the key is down, and
         // leaving `activeHoldChord` nil makes the matching `.ended` a no-op too, so the latch
@@ -1175,6 +1199,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     ///  - `releaseLatch()` — the popover's "Release <key>" row.
     ///  - NOT on clutch disarm / command-window expiry (`apply(_:generation:timestamp:)`): the
     ///    latch exists precisely so the hand can rest while dictation continues (Ruling 2).
+    ///  - NOT on `handleHoldEnded(_:)` for a HOLDABLE gesture bound to `.toggleKeystroke`
+    ///    (2026-08-24 ring/pinky-tap-overlap ruling, e.g. `victory` releasing its pose): the
+    ///    toggle fired once, via `handleToggleFire`, on the hold's `.began` — `activeHoldChord`
+    ///    was deliberately never set for it (see `handleHoldBegan(_:)`'s toggle branch), so the
+    ///    hold's `.ended` is a no-op and the latch stays engaged after the pose is released,
+    ///    exactly like any other toggle; only a second toggle-fire (organic release, via this same
+    ///    chokepoint's other callers, or the popover's "Release" row) turns it back off.
     ///  - NOT reached from `handleToggleFire` when a hold already owns the chord (Task 4 review
     ///    ruling): that guard returns before `keyLatch.toggle(...)` is ever called, so the latch
     ///    never believes it owns a key the hold is actually holding — the hold's own `.ended` is
@@ -1283,11 +1314,30 @@ final class TacitEngine: ObservableObject, EngineUIState {
             return
         }
 
+        // 2026-08-24 ring/pinky-tap-overlap ruling: a `.toggleKeystroke` binding on a HOLDABLE
+        // gesture (`Self.holdableGestures` — e.g. `victory`, defaults revision 5) must never be
+        // dispatched from here, for the exact same repeat-fire reason as the `.holdKeystroke`
+        // guard just below: a fired event re-arrives roughly every ~0.9s while the pose keeps
+        // being held (armed re-debounce + cooldown — see that guard's doc comment for the full
+        // mechanism), so toggling on every repeat fire would flip the latch on->off->on for as
+        // long as the user simply holds the pose, instead of toggling once on the pose's onset.
+        // `handleHoldBegan(_:)` owns firing the toggle exactly once, via the SAME
+        // `handleToggleFire(gesture:chord:)` this branch below calls for a momentary (non-holdable)
+        // toggle-bound gesture — see that method's toggle branch for the full story.
+        if case .toggleKeystroke = action, Self.holdableGestures.contains(event.gesture) {
+            TacitLog.engine.notice(
+                "handleFire gesture=\(event.gesture.rawValue, privacy: .public) returning early: holdable gesture owns .toggleKeystroke lifecycle via HoldTracker"
+            )
+            return
+        }
+
         // Workhorse-remap plan, Task 4: `.toggleKeystroke` is engine-owned exactly like
         // `.holdKeystroke` — posted synchronously on the main actor (structural down/up ordering,
         // see `handleHoldBegan(_:)`'s doc comment), never through `ActionDispatcher.dispatch`'s
         // detached full-press fallback, and skipping `applyDispatchOutcome`'s first-fire
-        // bookkeeping (the toggle's own HUD line below is the feedback).
+        // bookkeeping (the toggle's own HUD line below is the feedback). A HOLDABLE gesture bound
+        // to `.toggleKeystroke` never reaches this branch — the guard just above already returned
+        // for it — so this only ever handles momentary gestures (taps, swipes).
         if case .toggleKeystroke(let chord) = action {
             TacitLog.engine.notice(
                 "handleFire gesture=\(event.gesture.rawValue, privacy: .public) routing to toggle branch: chord=\(chord.display, privacy: .public)"
