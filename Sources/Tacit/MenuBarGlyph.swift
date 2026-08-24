@@ -36,6 +36,12 @@ protocol EngineUIState: ObservableObject {
     func pause(for duration: TimeInterval)
     /// Popover "Release" row: forces the current latch (if any) off.
     func releaseLatch()
+    /// When a `pause(for:)` is active, the deadline it will auto-resume at; `nil` otherwise. Drives
+    /// the popover pause row's state-aware "Resume" label and remaining-time text.
+    var userPauseEndsAt: Date? { get }
+    /// Popover "Resume" row (shown while `userPauseEndsAt` is non-nil): cancels the pending
+    /// auto-resume and resumes detection immediately.
+    func resumeFromUserPause()
 }
 
 // `StubEngine` (manual-verification stand-in cycling glyph states) and `PlaceholderEngine`

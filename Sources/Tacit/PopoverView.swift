@@ -91,20 +91,48 @@ struct PopoverView<Engine: EngineUIState>: View {
         }
     }
 
+    /// State-aware, not a `Toggle` (plain verbs, spec §4): reads "Pause for an hour" with a clock
+    /// glyph normally, and swaps in place to "Resume" with the remaining time once
+    /// `engine.userPauseEndsAt` is set — same row, same action slot, no separate control appearing.
+    /// `TimelineView(.everyMinute)` recomputes the remaining-time text on the minute without a
+    /// manual timer (brief: per-second precision isn't needed here).
     private var pauseButton: some View {
-        Button {
-            engine.pause(for: 3600)
-        } label: {
-            HStack(spacing: 8) {
-                Text("Pause for an hour")
-                Spacer(minLength: 8)
-                Image(systemName: "clock")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
+        TimelineView(.everyMinute) { _ in
+            Button {
+                if engine.userPauseEndsAt != nil {
+                    engine.resumeFromUserPause()
+                } else {
+                    engine.pause(for: 3600)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(engine.userPauseEndsAt != nil ? "Resume" : "Pause for an hour")
+                    Spacer(minLength: 8)
+                    if let remaining = remainingPauseText {
+                        Text(remaining)
+                            .font(.body.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "clock")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .font(.body)
             }
-            .font(.body)
+            .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
+            .frame(minHeight: 44)
+            .animation(TacitMotion.respecting(reduceMotion, TacitMotion.standardUI), value: engine.userPauseEndsAt)
         }
-        .buttonStyle(TacitUtilityRowButtonStyle(showsRestingSurface: false))
+    }
+
+    /// e.g. "52 min" — `nil` once fewer than a minute remains or no user pause is active, at which
+    /// point the row falls back to the clock glyph rather than showing "0 min".
+    private var remainingPauseText: String? {
+        guard let endsAt = engine.userPauseEndsAt else { return nil }
+        let minutes = Int(endsAt.timeIntervalSinceNow / 60)
+        guard minutes > 0 else { return nil }
+        return "\(minutes) min"
     }
 
     /// Shown only while a `.toggleKeystroke` chord is latched down — the always-visible way out

@@ -555,16 +555,24 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// off: marks `isScreenLockPaused = true` so the eventual unlock/wake signal (whichever one
     /// actually clears `isSystemBlocked`) performs the resume itself once the screen actually comes
     /// back.
+    ///
+    /// `userPauseEndsAt` mirrors this pause's deadline for the popover's state-aware pause/resume
+    /// row (nil means no user pause is active); it's cleared everywhere `pauseResumeTask` is
+    /// cancelled or completes, so the row never shows "Resume" once capture is actually running.
+    @Published private(set) var userPauseEndsAt: Date?
+
     func pause(for duration: TimeInterval) {
         pauseResumeTask?.cancel()
         // User-initiated: always wins over a pending screen-lock auto-resume (see
         // `isScreenLockPaused`'s doc comment).
         isScreenLockPaused = false
         capture.pause(reason: "Paused")
+        userPauseEndsAt = Date().addingTimeInterval(duration)
         pauseResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled, let self else { return }
             self.pauseResumeTask = nil
+            self.userPauseEndsAt = nil
             if self.isSystemBlocked {
                 self.isScreenLockPaused = true
                 return
@@ -573,12 +581,31 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
     }
 
+    /// Popover "Resume" row (shown in place of "Pause for an hour" while `userPauseEndsAt` is set):
+    /// cancels the pending auto-resume timer and resumes immediately. User-initiated, so it wins
+    /// over a pending screen-lock auto-resume the same way `pause(for:)`/`handleEnabledChange` do —
+    /// except when `isSystemBlocked` is still true, in which case it hands off to the next
+    /// unlock/wake signal exactly like `pause(for:)`'s own timer completion does above.
+    func resumeFromUserPause() {
+        TacitLog.capture.notice("user pause -> resume")
+        pauseResumeTask?.cancel()
+        pauseResumeTask = nil
+        userPauseEndsAt = nil
+        isScreenLockPaused = false
+        if isSystemBlocked {
+            isScreenLockPaused = true
+            return
+        }
+        capture.resume()
+    }
+
     // MARK: - isEnabled / capture-state plumbing
 
     private func handleEnabledChange(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.enabledDefaultsKey)
         pauseResumeTask?.cancel()
         pauseResumeTask = nil
+        userPauseEndsAt = nil
         // User-initiated: always wins over a pending screen-lock auto-resume (see
         // `isScreenLockPaused`'s doc comment).
         isScreenLockPaused = false
