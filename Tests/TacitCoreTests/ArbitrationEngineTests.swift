@@ -273,3 +273,49 @@ func feed(
         #expect(e.ingestPreDebounced(candidate, at: 1.0) == nil)
     }
 }
+
+// MARK: 16. Same-frame tie: a static event completing its debounce on the EXACT frame a
+// momentary candidate fires via `ingestPreDebounced` — matching `PipelineCore.process`'s
+// documented precedence (ingest static first, then pre-debounced; if both return an event, the
+// momentary one is the pipeline's effective/reported event, but the static fire's cooldown
+// ledger entry — recorded inside `ingest`, before `ingestPreDebounced` is ever called — is never
+// undone).
+
+@Test func sameFrameTieMomentaryWinsButStaticCooldownStillConsumed() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    let dt = 1.0 / 15.0
+    let t0 = 1.0
+    // Drive `.victory` through its 3-frame debounce; the third frame is where `ingest` fires.
+    _ = e.ingest(GestureCandidate(gesture: .victory, confidence: 0.9, timestamp: t0), at: t0)
+    _ = e.ingest(GestureCandidate(gesture: .victory, confidence: 0.9, timestamp: t0 + dt), at: t0 + dt)
+    let tieTime = t0 + 2 * dt
+    let staticEvent = e.ingest(GestureCandidate(gesture: .victory, confidence: 0.9, timestamp: tieTime), at: tieTime)
+    #expect(staticEvent == GestureEvent(gesture: .victory, timestamp: tieTime))
+
+    // On the SAME frame (identical timestamp, and — mirroring `PipelineCore.process`'s order —
+    // called immediately after the static `ingest` above), a momentary candidate also fires
+    // through the separate pre-debounced path.
+    let momentaryCandidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: tieTime)
+    let momentaryEvent = e.ingestPreDebounced(momentaryCandidate, at: tieTime)
+    #expect(momentaryEvent == GestureEvent(gesture: .thumbIndexTap, timestamp: tieTime))
+
+    // (a) The pipeline's documented precedence (`preDebouncedEvent ?? staticEvent`) reports the
+    // momentary event as this frame's effective one.
+    let effectiveEvent = momentaryEvent ?? staticEvent
+    #expect(effectiveEvent?.gesture == .thumbIndexTap)
+
+    // (b) The static gesture's cooldown ledger entry was still recorded by `ingest` above — even
+    // though the momentary event is what the pipeline reports — so re-driving `.victory` through
+    // a fresh debounce immediately afterward (well within the 0.8s cooldown) fires nothing.
+    let refireEvents = feed(e, gesture: .victory, conf: 0.9, from: tieTime + dt, frames: 3)
+    #expect(refireEvents.isEmpty)
+
+    // (c) Neither call armed/disarmed the engine — it's still armed throughout.
+    guard case .armed = e.state else {
+        Issue.record("expected still armed after the tie, got \(e.state)")
+        return
+    }
+}
