@@ -201,6 +201,32 @@ private struct V2MappingsFile: Codable {
     #expect(onDisk.bindings["swipeUp"] == GestureBinding(enabled: true, action: .focusTextInput))
 }
 
+/// The other half of the "customized" predicate: a user who ENABLED `swipeRight` while it was
+/// still pointing at the old suggested ⌃→ action — i.e. `enabled == true` but `action` is
+/// unchanged from `oldSuggestedDefaultActions`. The predicate is an OR, so `enabled == true`
+/// alone must be enough to count as customized; the top-up must leave this binding exactly as
+/// the user left it rather than overwriting it with the new ⌘Tab default just because the action
+/// happens to still match the old suggestion.
+@MainActor
+@Test func topUpDoesNotClobberAGestureEnabledOnTheOldSuggestedAction() throws {
+    let dir = makeTempDirectory()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let fileURL = dir.appendingPathComponent("mappings.json")
+
+    let enabledOnOldSuggestion = GestureBinding(
+        enabled: true, action: .keystroke(KeyChord(keyCode: 124, modifiers: [.control])) // pre-Task-11 ⌃→, but ON
+    )
+    let existingFile = V2MappingsFile(version: 2, bindings: ["swipeRight": enabledOnOldSuggestion])
+    try JSONEncoder().encode(existingFile).write(to: fileURL)
+
+    let flags = makeTempUserDefaults()
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    // Enabled-on-the-old-action counts as customized — the top-up must not touch it.
+    #expect(store.binding(for: .swipeRight) == enabledOnOldSuggestion)
+    #expect(flags.bool(forKey: workflowDefaultsAppliedKey) == true)
+}
+
 /// Once the top-up has run (flag set), it must never run again — even if the user later disables
 /// one of the topped-up gestures, a subsequent load must not silently re-enable it.
 @MainActor

@@ -22,7 +22,10 @@ import Testing
     #expect(TacitAction.focusTextInput.summary == "Focus text input")
 }
 
-@Test func holdKeystrokeSummarySpecialCasesFnKeyCode63() {
+/// M3 Task 11 (fix pass): renamed from `holdKeystrokeSummarySpecialCasesFnKeyCode63` — there's no
+/// special case anymore. `KeyChord.capNames` maps keyCode 63 to "Fn", so this is just plain
+/// `"Hold " + chord.display` doing its normal thing.
+@Test func holdKeystrokeSummaryRendersFnViaDisplay() {
     #expect(TacitAction.holdKeystroke(KeyChord(keyCode: 63, modifiers: [])).summary == "Hold Fn")
 }
 

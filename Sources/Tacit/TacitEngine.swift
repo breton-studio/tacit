@@ -851,11 +851,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
         _ = actionEnvironment.postKeyDown(chord)
         if isHUDEnabled {
             // `HUDController.showHold` renders "<Gesture> → holding <label>" — deliberately the
-            // bare key label (chord.display, "Fn" for keyCode 63), NOT `action.summary` (which is
-            // already "Hold ⌘Space"/"Hold Fn"): prefixing "holding " onto THAT would double up
-            // into "holding Hold Fn".
-            let keyLabel = chord.keyCode == 63 ? "Fn" : chord.display
-            hudController.showHold(gesture: event.gesture, actionSummary: keyLabel, frame: latestFrame)
+            // bare key label (chord.display, "Fn" for keyCode 63 via `KeyChord.capNames`), NOT
+            // `action.summary` (which is already "Hold ⌘Space"/"Hold Fn"): prefixing "holding "
+            // onto THAT would double up into "holding Hold Fn". M3 Task 11 (fix pass): this used
+            // to special-case keyCode 63 itself, the sibling of the one `TacitAction.summary` had
+            // — both are gone now that `capNames` covers keyCode 63 directly.
+            hudController.showHold(gesture: event.gesture, actionSummary: chord.display, frame: latestFrame)
         }
     }
 
