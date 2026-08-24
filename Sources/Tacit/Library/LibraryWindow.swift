@@ -21,8 +21,15 @@ struct LibraryWindow: View {
     /// `AppearingCard` checks it in `onAppear` and skips straight to `appeared = true` when a
     /// card has already played its entrance once.
     @State private var appearedIDs: Set<GestureID> = []
-    /// Measured width of the grid content (post-padding), used to eagerly chunk each tier's
+    /// Measured width AVAILABLE to the grid (post-padding), used to eagerly chunk each tier's
     /// entries into fixed-width rows — see the crash postmortem on `cardGrid(entries:)` below.
+    /// This must be the width the container OFFERS, not the width the content produces: reading it
+    /// off a `GeometryReader` nested inside the scrollable content (e.g. in a `.background`) would
+    /// measure the size the rows ended up rendering at — which itself depends on `cardWidth`, which
+    /// depends on this value — a self-referential loop with no tie back to the actual window width.
+    /// `gesturesTab` instead makes `GeometryReader` the OUTER container of the whole tab (a sibling
+    /// of nothing, wrapping the `ZStack`), so `proxy.size.width` is always exactly what the tab's
+    /// parent (the `TabView`) offered it — the true available width, however the window is sized.
     /// Seeded with the window's default content width (`720` minWidth − 24pt padding × 2) so the
     /// very first layout pass, before `GeometryReader` reports back, already renders roughly the
     /// right column count instead of collapsing to a single column and re-flowing a frame later.
@@ -58,38 +65,37 @@ struct LibraryWindow: View {
 
     // MARK: - Gestures tab (unchanged content, just re-parented under the TabView above)
 
-    /// A `ZStack`, not `ScrollView`'s own `.overlay`: `detailOverlay` needs to measure and fill
-    /// the FULL tab content area (via its own `GeometryReader`, see below) to center reliably and
-    /// to compute a height cap from the actual window size, and a `ZStack` sibling gives it that
-    /// without being constrained by the `ScrollView`'s scrollable-content geometry.
+    /// `GeometryReader` is the OUTER container here — not nested in a `.background` deeper in the
+    /// tree — precisely so `proxy.size.width` reports the width this tab was OFFERED by its parent
+    /// (`TabView`), never a size derived from what the grid itself rendered. See `contentWidth`'s
+    /// doc comment for the feedback-loop bug this replaced. The inner `ZStack` (not `ScrollView`'s
+    /// own `.overlay`) still hosts `detailOverlay` as a sibling of the `ScrollView`, sized to fill
+    /// this same offered area, so it centers reliably and computes its height cap from the actual
+    /// window size regardless of the `ScrollView`'s scrollable-content geometry.
     private var gesturesTab: some View {
-        ZStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
-                    ForEach(Self.tierOrder, id: \.self) { tier in
-                        section(for: tier)
+        GeometryReader { proxy in
+            ZStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 32) {
+                        ForEach(Self.tierOrder, id: \.self) { tier in
+                            section(for: tier)
+                        }
                     }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Measures the grid's available width (post-padding) so `cardGrid(entries:)` can
-                // chunk cards into fixed-width rows eagerly instead of relying on `LazyVGrid`'s
-                // adaptive columns — see the crash postmortem there. A passive `.background`
-                // reader (rather than making `GeometryReader` the container) so it never fights
-                // this `VStack` for its own size.
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { contentWidth = proxy.size.width }
-                            .onChange(of: proxy.size.width) { _, newWidth in
-                                contentWidth = newWidth
-                            }
-                    }
-                }
-            }
-            .background(.background)
+                .background(.background)
 
-            detailOverlay
+                detailOverlay
+            }
+            // The AVAILABLE width, post-padding (24pt each side) — fed to `cardGrid(entries:)` via
+            // `contentWidth` so it can chunk cards into fixed-width rows eagerly instead of relying
+            // on `LazyVGrid`'s adaptive columns (see the crash postmortem there). Read off this
+            // outer reader's `proxy`, not off anything the grid produced.
+            .onAppear { contentWidth = proxy.size.width - 2 * 24 }
+            .onChange(of: proxy.size.width) { _, newWidth in
+                contentWidth = newWidth - 2 * 24
+            }
         }
         .onExitCommand {
             if expandedGesture != nil { collapse() }
@@ -146,6 +152,10 @@ struct LibraryWindow: View {
                         .frame(width: cardWidth, alignment: .topLeading)
                     }
                 }
+                // A partial last row (fewer than `columnCount` cards) must stay pinned to the
+                // leading edge, not be centered by the `ZStack`/`GeometryReader` container this
+                // grid now sits in — an `HStack` alone only takes the width its cards sum to.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
