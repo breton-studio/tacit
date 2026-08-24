@@ -1,5 +1,6 @@
 @preconcurrency import ApplicationServices
 import AppKit
+import ServiceManagement
 import TacitCore
 
 /// The real macOS implementation of `ActionEnvironment` — posts synthetic key events, launches
@@ -63,5 +64,21 @@ enum AccessibilityPermission {
     static func requestPromptIfNeeded() {
         let key = promptOptionKey.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+    }
+}
+
+/// Task 21 controller ruling (R5): launch-at-login defaults to ON for a fresh install. Runs at
+/// most once ever — gated by `tacit.launchAtLoginConfigured`, which is set regardless of whether
+/// `register()` actually succeeds — so this never re-fires on a later launch, and never fights a
+/// user who deliberately turns the toggle back off afterward. `PopoverView`'s "Launch at Login"
+/// toggle is unaffected by this (and unaware of it): it reads `SMAppService.mainApp.status`
+/// directly, so it continues to reflect whatever the real system state is either way.
+enum LaunchAtLoginDefault {
+    private static let configuredDefaultsKey = "tacit.launchAtLoginConfigured"
+
+    static func configureIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: configuredDefaultsKey) else { return }
+        UserDefaults.standard.set(true, forKey: configuredDefaultsKey)
+        try? SMAppService.mainApp.register() // best-effort; failure is ignored gracefully.
     }
 }

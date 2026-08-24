@@ -178,3 +178,98 @@ func feed(
     let events = feed(e, gesture: .victory, conf: 0.9, from: 3.0, frames: 3)
     #expect(events.count == 1)
 }
+
+// MARK: - `ingestPreDebounced` (Task 21 controller ruling R1)
+
+// MARK: 10. Fires once when armed, above enterConfidence.
+
+@Test func preDebouncedFiresOnceWhenArmed() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    let t = 1.0
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) == GestureEvent(gesture: .thumbIndexTap, timestamp: t))
+}
+
+// MARK: 11. Respects the per-gesture cooldown shared with `ingest`.
+
+@Test func preDebouncedRespectsCooldown() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+
+    let first = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: 1.0)
+    #expect(e.ingestPreDebounced(first, at: 1.0) != nil)
+
+    // Well within the 0.8s cooldown window.
+    let second = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: 1.1)
+    #expect(e.ingestPreDebounced(second, at: 1.1) == nil)
+}
+
+// MARK: 12. Silent while disarmed or arming — never arms/disarms itself.
+
+@Test func preDebouncedSilentWhenDisarmed() {
+    let e = ArbitrationEngine()
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.95, timestamp: 0)
+    #expect(e.ingestPreDebounced(candidate, at: 0) == nil)
+    #expect(e.state == .disarmed)
+}
+
+@Test func preDebouncedSilentWhileArming() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 2) // well under clutchHold
+    guard case .arming = e.state else { Issue.record("expected arming, got \(e.state)"); return }
+
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.95, timestamp: 0.1)
+    #expect(e.ingestPreDebounced(candidate, at: 0.1) == nil)
+}
+
+// MARK: 13. Silent past the window's end, and silent below `enterConfidence`.
+
+@Test func preDebouncedSilentAtOrAfterWindowEnd() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed(let windowEndsAt) = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.95, timestamp: windowEndsAt)
+    #expect(e.ingestPreDebounced(candidate, at: windowEndsAt) == nil)
+}
+
+@Test func preDebouncedSilentBelowEnterConfidence() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    let belowEnter = ArbitrationTuning().enterConfidence - 0.1
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: belowEnter, timestamp: 1.0)
+    #expect(e.ingestPreDebounced(candidate, at: 1.0) == nil)
+}
+
+// MARK: 14. Extends `windowEndsAt` to `now + commandWindow` on fire, same as a normal `ingest` fire.
+
+@Test func preDebouncedExtendsWindow() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+
+    let t = 1.0
+    let candidate = GestureCandidate(gesture: .thumbIndexTap, confidence: 0.9, timestamp: t)
+    #expect(e.ingestPreDebounced(candidate, at: t) != nil)
+
+    guard case .armed(let windowEndsAt) = e.state else {
+        Issue.record("expected still armed after firing, got \(e.state)")
+        return
+    }
+    #expect(windowEndsAt == t + ArbitrationTuning().commandWindow)
+}
+
+// MARK: 15. Reserved gestures (looseFist/openPalm) never fire through this path, even armed.
+
+@Test func preDebouncedIgnoresReservedGestures() {
+    let e = ArbitrationEngine()
+    _ = feed(e, gesture: .looseFist, conf: 0.9, from: 0, frames: 8)
+    guard case .armed = e.state else { Issue.record("expected armed, got \(e.state)"); return }
+
+    for gesture: GestureID in [.looseFist, .openPalm] {
+        let candidate = GestureCandidate(gesture: gesture, confidence: 0.95, timestamp: 1.0)
+        #expect(e.ingestPreDebounced(candidate, at: 1.0) == nil)
+    }
+}

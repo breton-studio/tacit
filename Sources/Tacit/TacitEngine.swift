@@ -87,7 +87,26 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     let recorder: FixtureRecorder
 
+    /// The persistent gesture→action mapping store (spec §3.6, Task 21 unification): `TacitEngine`
+    /// is the SINGLE owner of the app's one `MappingStore` instance — the Library window and
+    /// onboarding read/write this exact object (`TacitApp` passes `engine.mappingStore` to both),
+    /// and `handleFire(_:)` below reads it on every fired event. No second instance exists
+    /// anywhere in the app.
+    let mappingStore = MappingStore()
+    /// Routes a fired, bound `TacitAction` to its real macOS side effect. Constructed once with
+    /// the live environment — see `handleFire(_:)` for why `dispatch(_:)` itself must never be
+    /// called from the main actor.
+    private let actionDispatcher = ActionDispatcher(environment: LiveActionEnvironment.make())
+    /// The one HUD panel instance for real gesture fires, shown/errored by `handleFire(_:)`.
+    /// (`PopoverView`'s ⌥-debug section keeps its own separate, never-wired `HUDController` for
+    /// eyeballing motion manually — see that file's doc comment — so the two never collide.)
+    let hudController = HUDController()
+
     private static let enabledDefaultsKey = "tacit.enabled"
+    /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
+    /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
+    /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
+    private static let firstFireCelebratedKey = "tacit.firstFireCelebrated"
 
     private let capture = CaptureEngine()
     private var pipeline: PipelineCore?
@@ -98,17 +117,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private var pauseResumeTask: Task<Void, Never>?
     private var accessibilityCheckTask: Task<Void, Never>?
     private var hasStarted = false
-    private var hasAttachedMappingStore = false
 
     /// The two components `warning` is derived from (spec §6): a camera-side message (from
-    /// `CaptureState`) and an Accessibility-side message (from `attachMappingStore`'s polling).
+    /// `CaptureState`) and an Accessibility-side message (from the poll wired in `init` below).
     /// Kept separate rather than overwriting one `warning` in place so neither source can clobber
     /// the other's message — `recomputeWarning()` is the only place they're combined, camera
     /// taking priority since a camera problem blocks everything downstream of it.
     private var captureWarning: String?
     private var accessibilityWarning: String?
     /// True while at least one ENABLED binding's action `requiresAccessibility` — recomputed
-    /// whenever `MappingStore.bindings` changes (see `attachMappingStore`). Kept as a stored flag
+    /// whenever `mappingStore.bindings` changes (wired below, in `init`). Kept as a stored flag
     /// (rather than re-scanning bindings on every 5 s poll tick) so the poll loop only ever has to
     /// ask one question: is Accessibility trusted right now.
     private var enabledKeystrokeBindingExists = false
@@ -147,6 +165,30 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 self?.handleEnabledChange(enabled)
             }
             .store(in: &cancellables)
+
+        // Spec §6's Accessibility-warning derivation (Task 20), unified onto the single owned
+        // `mappingStore` (Task 21): recompute strategy is a periodic 5 s poll while any enabled
+        // binding requires Accessibility, PLUS an immediate recompute whenever `bindings` itself
+        // changes (enabling/disabling/rebinding a keystroke gesture shouldn't wait up to 5 s to
+        // show or clear the warning). `AXIsProcessTrusted()` has no publisher of its own, so
+        // polling is the only way to notice a grant/revoke made in System Settings while Tacit
+        // keeps running.
+        mappingStore.$bindings
+            .sink { [weak self] bindings in
+                guard let self else { return }
+                self.enabledKeystrokeBindingExists = bindings.values.contains {
+                    $0.enabled && ($0.action?.requiresAccessibility ?? false)
+                }
+                self.recomputeAccessibilityWarning()
+            }
+            .store(in: &cancellables)
+
+        accessibilityCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.recomputeAccessibilityWarning()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 
     // MARK: - Lifecycle
@@ -267,41 +309,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
         warning = captureWarning ?? accessibilityWarning
     }
 
-    // MARK: - Accessibility warning (spec §6, Task 20)
-
-    /// Wires the persistent mapping store so `warning` can also surface "Keystroke actions need
-    /// Accessibility" (spec §6's Accessibility row) at the app level, not just on individual
-    /// Library cards (see `ActionBinderView.accessibilityNotice`). Called once from `TacitApp`
-    /// alongside `start()`; safe to call more than once (only the first call has any effect),
-    /// matching `start()`'s own idempotence.
-    ///
-    /// Recompute strategy (documented choice, brief gives two acceptable options): a periodic 5 s
-    /// poll while any enabled binding requires Accessibility, PLUS an immediate recompute whenever
-    /// `MappingStore.bindings` itself changes (enabling/disabling/rebinding a keystroke gesture
-    /// shouldn't wait up to 5 s to show or clear the warning). `AXIsProcessTrusted()` has no
-    /// publisher of its own, so polling is the only way to notice a grant/revoke made in System
-    /// Settings while Tacit keeps running.
-    func attachMappingStore(_ store: MappingStore) {
-        guard !hasAttachedMappingStore else { return }
-        hasAttachedMappingStore = true
-
-        store.$bindings
-            .sink { [weak self] bindings in
-                guard let self else { return }
-                self.enabledKeystrokeBindingExists = bindings.values.contains {
-                    $0.enabled && ($0.action?.requiresAccessibility ?? false)
-                }
-                self.recomputeAccessibilityWarning()
-            }
-            .store(in: &cancellables)
-
-        accessibilityCheckTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                self?.recomputeAccessibilityWarning()
-                try? await Task.sleep(for: .seconds(5))
-            }
-        }
-    }
+    // MARK: - Accessibility warning (spec §6, Task 20; wired in `init`, Task 21)
 
     private func recomputeAccessibilityWarning() {
         accessibilityWarning = (enabledKeystrokeBindingExists && !AXIsProcessTrusted())
@@ -342,8 +350,62 @@ final class TacitEngine: ObservableObject, EngineUIState {
         if let event = result.event {
             lastEvent = event
             pulseFired()
+            handleFire(event)
         } else {
             recomputeGlyphState()
+        }
+    }
+
+    // MARK: - Closing the loop: gesture event → dispatched action → HUD (Task 21)
+
+    /// Looks up `event.gesture`'s binding and, if it's enabled and bound to an action, dispatches
+    /// it and shows the resulting HUD feedback. Reserved gestures (`.looseFist`/`.openPalm`),
+    /// unbound gestures (`action == nil`), and disabled bindings all no-op here — no dispatch, no
+    /// HUD — matching the brief exactly; the glyph's fire pulse above already happened
+    /// unconditionally regardless of binding state.
+    private func handleFire(_ event: GestureEvent) {
+        let binding = mappingStore.binding(for: event.gesture)
+        guard binding.enabled, let action = binding.action else { return }
+
+        // `ActionDispatcher.dispatch` must NEVER be called from the main actor: `.keystroke`
+        // synchronously posts a `CGEvent` and `.runShortcut` blocks on `Process.waitUntilExit()`
+        // (see `LiveActionEnvironment.runShortcut`'s doc comment) — either could stall the UI for
+        // as long as the Shortcut takes to run. `actionDispatcher` (a `Sendable` struct of
+        // `@Sendable` closures) and `action`/`gesture`/`frame` (all `Sendable` value types) are
+        // captured into a `Task.detached` that runs off any actor; only the resulting UI update
+        // hops back to the main actor via `MainActor.run`.
+        let dispatcher = actionDispatcher
+        let gesture = event.gesture
+        let frame = latestFrame
+
+        Task.detached { [weak self] in
+            let outcome = dispatcher.dispatch(action)
+            await MainActor.run {
+                self?.applyDispatchOutcome(outcome, gesture: gesture, action: action, frame: frame)
+            }
+        }
+    }
+
+    /// The main-actor-side half of `handleFire(_:)`, run once `actionDispatcher.dispatch` returns.
+    private func applyDispatchOutcome(
+        _ outcome: DispatchOutcome, gesture: GestureID, action: TacitAction, frame: LandmarkFrame?
+    ) {
+        switch outcome {
+        case .performed:
+            // Task 21 controller ruling (R4): the FIRST-EVER successful mapped-gesture fire (and
+            // only that one) asks the HUD for the grander `celebratory` draw-on; every subsequent
+            // fire uses the standard motion. The flag is set unconditionally the first time
+            // through, regardless of what happens to `celebratory` below — a fire can only ever
+            // be "the first" once.
+            let celebratory = !UserDefaults.standard.bool(forKey: Self.firstFireCelebratedKey)
+            if celebratory {
+                UserDefaults.standard.set(true, forKey: Self.firstFireCelebratedKey)
+            }
+            hudController.show(gesture: gesture, actionSummary: action.summary, frame: frame, celebratory: celebratory)
+        case .needsAccessibility:
+            hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
+        case .failed(let message):
+            hudController.showError(message)
         }
     }
 
@@ -402,10 +464,18 @@ private actor PipelineCore {
     private let classifier = StaticPoseClassifier()
     private let arbitration = ArbitrationEngine()
 
+    /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
+    /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
+    /// swipe) has to keep evolving through disarmed/arming frames so it's already primed the
+    /// instant the clutch arms. SEPARATE instances from `previewTapDetector`/`previewSwipeDetector`
+    /// below, so a card-detail preview session's tracking state can never leak into (or be leaked
+    /// into by) production recognition.
+    private var tapDetector = PinchTapDetector()
+    private var swipeDetector = ThumbSwipeDetector()
+
     /// Task 19's perform-to-preview mode: `false` unless a `CardDetailView` preview strip is
     /// currently mounted (see `TacitEngine.isPreviewActive`). `previewTapDetector` /
-    /// `previewSwipeDetector` are SEPARATE instances from anything the production arbitration path
-    /// uses (there are none there today — tap/swipe aren't wired into `arbitration` yet) so preview
+    /// `previewSwipeDetector` are SEPARATE instances from the production ones above so preview
     /// state can never cross into or out of the arbitration path.
     private var previewActive = false
     private var previewTapDetector = PinchTapDetector()
@@ -433,11 +503,23 @@ private actor PipelineCore {
     /// completion before issuing the next, so this never actually executes concurrently with
     /// itself — but even if it did, actor isolation would serialize it safely.
     ///
+    /// Task 21 controller ruling (R2), production event precedence: `tapDetector`/`swipeDetector`
+    /// run on EVERY frame (unconditionally, not gated on `previewActive` or on arbitration state).
+    /// The static candidate is ingested into `arbitration.ingest` FIRST, exactly as before — the
+    /// clutch/disarm path must see every frame regardless of what a momentary detector does. THEN
+    /// a momentary candidate (`tap ?? swipe`, if either fired this frame) goes through the separate
+    /// `arbitration.ingestPreDebounced` entry point (see that method's doc comment — momentary
+    /// candidates are already self-debounced in time by their own detectors and could never
+    /// satisfy `ingest`'s 3-frame debounce). If BOTH return an event on the same frame, the
+    /// momentary one wins: it's what this function returns, and the static event is ledger-dropped
+    /// — `ingest`'s own bookkeeping (cooldown, window extension) for that static fire already
+    /// happened above and is never undone, only which `GestureEvent` is reported to `TacitEngine`
+    /// differs.
+    ///
     /// When `previewActive`, this ALSO runs the frame through preview-scoped
     /// `PinchTapDetector`/`ThumbSwipeDetector` instances, entirely independent of (and never
-    /// feeding into) `arbitration` — `candidate` is computed and fed to `arbitration.ingest` first,
-    /// identically regardless of `previewActive`, and nothing below this point ever reads back into
-    /// `arbitration` or the production `candidate`/`event` values.
+    /// feeding into) `arbitration` — nothing below this point ever reads back into `arbitration` or
+    /// the production `candidate`/`event` values.
     ///
     /// `previewCandidate` precedence: a freshly-firing tap/swipe candidate this frame > an
     /// unexpired latch from an earlier firing > the frame's own static `candidate`. A live static
@@ -455,7 +537,11 @@ private actor PipelineCore {
         let frames = await detector.detect(in: pixelBuffer, timestamp: timestamp)
         let frame = frames.first
         let candidate = frame.flatMap(classifier.classify)
-        let event = arbitration.ingest(candidate, at: timestamp)
+        let staticEvent = arbitration.ingest(candidate, at: timestamp)
+
+        let momentary = frame.flatMap { tapDetector.ingest($0) ?? swipeDetector.ingest($0) }
+        let preDebouncedEvent = momentary.flatMap { arbitration.ingestPreDebounced($0, at: timestamp) }
+        let event = preDebouncedEvent ?? staticEvent
 
         var previewCandidate: GestureCandidate?
         if previewActive {

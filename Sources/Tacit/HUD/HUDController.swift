@@ -30,8 +30,9 @@ private extension LandmarkFrame {
 /// reused for the app's lifetime — never destroyed/recreated per `show()` — so retargeting a
 /// visible HUD never produces an overlapping second panel.
 ///
-/// Not wired into `TacitEngine` yet (Task 21 does that); this task only builds the panel + view
-/// and a DEBUG-only manual test hook in the popover.
+/// Wired into `TacitEngine` (Task 21: one instance owned by the engine, driven by
+/// `TacitEngine.applyDispatchOutcome`). `PopoverView`'s ⌥-debug section keeps its own separate,
+/// never-wired instance purely for eyeballing motion by hand — see that file's doc comment.
 @MainActor
 final class HUDController {
     /// The visible chip's fixed size, deliberately — this is "system-volume-HUD territory"
@@ -73,25 +74,33 @@ final class HUDController {
     /// data if the caller has it; `nil` falls back to that gesture's own canned frame (the same
     /// `CannedFrames` single source the specimen-book cards use), so the HUD shows the fired
     /// gesture's actual pose even without a live frame, rather than a generic fist.
-    func show(gesture: GestureID, actionSummary: String, frame: LandmarkFrame?) {
+    ///
+    /// `celebratory` (Task 21 controller ruling R4, signature budget spend #2, the last allowed):
+    /// pass `true` ONLY for the first-ever successful mapped-gesture fire — this one fresh
+    /// appearance gets the constellation's draw-on animated on `TacitMotion.signature` instead of
+    /// the standard `hudConstellationDrawOn`, a one-time slightly grander HUD moment. Defaults to
+    /// `false` for every other call site (including a retarget, which never re-draws the
+    /// constellation regardless of this flag — see `enterFresh(celebratory:)`).
+    func show(gesture: GestureID, actionSummary: String, frame: LandmarkFrame?, celebratory: Bool = false) {
         let entry = GestureCatalog.entry(for: gesture)
         present(
             .gesture(
                 displayName: entry.displayName,
                 actionSummary: actionSummary,
                 frame: frame ?? entry.cannedFrame
-            )
+            ),
+            celebratory: celebratory
         )
     }
 
     /// Shows (or retargets) the HUD's error variant: same surface, message only, no constellation.
     func showError(_ message: String) {
-        present(.error(message: message))
+        present(.error(message: message), celebratory: false)
     }
 
     // MARK: - Presentation
 
-    private func present(_ content: HUDContent) {
+    private func present(_ content: HUDContent, celebratory: Bool) {
         ensurePanel()
         dwellTask?.cancel()
         currentToken = UUID()
@@ -105,21 +114,24 @@ final class HUDController {
         } else {
             panel?.orderFrontRegardless()
             isPanelOnScreen = true
-            enterFresh()
+            enterFresh(celebratory: celebratory)
         }
 
         scheduleDismiss(token: token)
     }
 
     /// First appearance from fully hidden: opacity 0→1, scale 0.97→1, translateY 6→0 on `hudIn`,
-    /// concurrent with the constellation's wrist-outward draw-on on `hudConstellationDrawOn`.
+    /// concurrent with the constellation's wrist-outward draw-on — `TacitMotion.signature` when
+    /// `celebratory` (the one-time first-ever-fire moment, R4), `hudConstellationDrawOn`
+    /// otherwise.
     ///
     /// Reduce Motion (spec §4: "opacity fade only, full stroke immediately"): the fade itself
     /// still plays — only opacity is a real semantic-content change here, everything else is
     /// decorative movement — so `scale`/`translateY`'s PRE-animation values are set to their
     /// already-final targets (no delta for `withAnimation` to animate), and `drawProgress` jumps
-    /// straight to 1 outside any animation block, before the panel is even shown.
-    private func enterFresh() {
+    /// straight to 1 outside any animation block, before the panel is even shown. This applies
+    /// identically whether or not `celebratory` — Reduce Motion always takes the normal RM path.
+    private func enterFresh(celebratory: Bool) {
         state.opacity = 0
         state.scale = reduceMotion ? 1 : 0.97
         state.translateY = reduceMotion ? 0 : 6
@@ -131,7 +143,7 @@ final class HUDController {
             state.translateY = 0
         }
         if !reduceMotion {
-            withAnimation(TacitMotion.hudConstellationDrawOn) {
+            withAnimation(celebratory ? TacitMotion.signature : TacitMotion.hudConstellationDrawOn) {
                 state.drawProgress = 1
             }
         }

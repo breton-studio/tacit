@@ -81,6 +81,38 @@ public final class ArbitrationEngine {
         }
     }
 
+    /// Task 21 controller ruling (R1): a SEPARATE entry point for momentary candidates — taps and
+    /// swipes — whose detectors already self-debounce in time (a tap only ever emits on its
+    /// release frame; a swipe only on the single frame its travel threshold is crossed). Feeding
+    /// either into `ingest`'s normal path could never accumulate `debounceFrames` consecutive
+    /// frames of the same gesture, so it could never fire there. This method is the fix: no
+    /// arming, no disarming, no debounce accumulation at all — just the armed-window check, a
+    /// confidence floor, the reserved-gesture guard, and the same per-gesture cooldown ledger
+    /// `ingest` uses (shared, so a gesture fired through either path respects the other path's
+    /// most recent fire).
+    ///
+    /// Fires iff: `state` is `.armed` AND `now` is still inside that window AND
+    /// `candidate.confidence >= enterConfidence` AND `candidate.gesture` isn't reserved
+    /// (`.looseFist`/`.openPalm` are never fireable through either path) AND the per-gesture
+    /// cooldown is clear. On fire, extends `windowEndsAt` to `now + commandWindow` — identical to
+    /// a normal `ingest` fire — and records the cooldown. Never touches `armingStartAt`,
+    /// `debounceGesture`, or `debounceCount`, so it can neither arm/disarm the clutch nor perturb
+    /// an in-flight static-pose debounce running through `ingest`.
+    public func ingestPreDebounced(_ candidate: GestureCandidate, at now: TimeInterval) -> GestureEvent? {
+        guard case .armed(let windowEndsAt) = state, now < windowEndsAt else { return nil }
+        guard candidate.confidence >= tuning.enterConfidence else { return nil }
+        guard !GestureCatalog.entry(for: candidate.gesture).isReserved else { return nil }
+
+        let gesture = candidate.gesture
+        if let last = lastFiredAt[gesture], now - last < tuning.cooldown {
+            return nil
+        }
+
+        lastFiredAt[gesture] = now
+        state = .armed(windowEndsAt: now + tuning.commandWindow)
+        return GestureEvent(gesture: gesture, timestamp: now)
+    }
+
     // MARK: - Disarmed / arming phase (the clutch itself)
 
     private func processClutch(_ candidate: GestureCandidate?, now: TimeInterval) {

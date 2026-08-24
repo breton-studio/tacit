@@ -20,7 +20,9 @@ struct PopoverView<Engine: EngineUIState>: View {
 
     #if DEBUG
     /// Manual-verification-only: fires a fake `HUDController.show` from the ⌥-debug section
-    /// (brief step 3/5). Never wired to the real engine — Task 21 does that.
+    /// (brief step 3/5). Deliberately kept separate from `engine.hudController` — Task 21 wired
+    /// that one to real gesture fires; this one stays a standalone instance purely for eyeballing
+    /// HUD motion by hand, without needing a live camera/gesture to trigger it.
     @State private var hudController = HUDController()
     #endif
 
