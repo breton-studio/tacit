@@ -134,7 +134,19 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// unlock/wake must never override a pause the user asked for on purpose. Set `false` unconditionally
     /// by `handleEnabledChange` and `pause(for:)` — the two user-initiated pause paths — so a lock
     /// that happens to overlap with either of those can never sneak an unwanted auto-resume in later.
+    ///
+    /// Also written to `true` by `pause(for:)`'s own timer completion — see `isScreenLocked` below —
+    /// when the hour elapses while the screen is still locked/asleep: that hands the eventual resume
+    /// off to `handleScreenResumeSignal` instead of resuming immediately behind a locked screen.
     private var isScreenLockPaused = false
+    /// True while the screen is CURRENTLY locked or the display asleep — set by
+    /// `handleScreenPauseSignal`, cleared by `handleScreenResumeSignal`, entirely independent of
+    /// `isScreenLockPaused` above (which tracks WHO caused the current pause, not whether the lock
+    /// is still in effect right now). Post-review fix: without this, `pause(for:)`'s timer
+    /// completion had no way to know the screen was still locked when the hour elapsed, and would
+    /// call `capture.resume()` unconditionally — restarting capture behind a locked screen, exactly
+    /// what I2 exists to prevent. `pause(for:)`'s completion checks this flag before resuming.
+    private var isScreenLocked = false
     /// Tokens for the block-based observers registered by `registerForScreenStateNotifications()`,
     /// paired with the center each was registered on (`DistributedNotificationCenter` is a
     /// `NotificationCenter` subclass, so both fit this one array) — removed in `deinit`. Declared
@@ -285,6 +297,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// resume after `duration`. Independent of the `isEnabled` master toggle — but if the user
     /// flips that toggle (either direction) before the timer fires, `handleEnabledChange` cancels
     /// this pending resume so the two mechanisms never fight over capture state.
+    ///
+    /// Post-review fix: the completion no longer resumes unconditionally. If the screen is STILL
+    /// locked/asleep (`isScreenLocked`) when the timer fires, resuming here would restart capture
+    /// behind a locked screen — exactly what I2 exists to prevent. Instead it hands off: marks
+    /// `isScreenLockPaused = true` so the eventual unlock/wake signal (`handleScreenResumeSignal`)
+    /// performs the resume itself once the screen actually comes back.
     func pause(for duration: TimeInterval) {
         pauseResumeTask?.cancel()
         // User-initiated: always wins over a pending screen-lock auto-resume (see
@@ -295,6 +313,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled, let self else { return }
             self.pauseResumeTask = nil
+            if self.isScreenLocked {
+                self.isScreenLockPaused = true
+                return
+            }
             self.capture.resume()
         }
     }
@@ -309,6 +331,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // `isScreenLockPaused`'s doc comment).
         isScreenLockPaused = false
         if enabled {
+            // Deliberately resumes unconditionally, even if `isScreenLocked` is still true: this is
+            // an explicit user action (flipping the master toggle back on), not a timer firing in
+            // the background, so per re-review it's allowed to override a screen-lock pause —
+            // unlike `pause(for:)`'s deferred timer-completion resume above.
             capture.resume()
         } else {
             capture.pause(reason: "Paused")
@@ -393,22 +419,29 @@ final class TacitEngine: ObservableObject, EngineUIState {
         ]
     }
 
-    /// Only pauses (and only marks the pause as system-initiated) while capture is actually
-    /// `.running` — if it's already `.paused` (user disabled it, or mid "Pause for an Hour") or
-    /// `.unavailable` (no camera), there's nothing for this signal to do, and critically
-    /// `isScreenLockPaused` must stay `false` so the matching unlock/wake never resumes a pause it
-    /// didn't cause.
+    /// Marks `isScreenLocked = true` unconditionally — that bookkeeping has to stay accurate
+    /// regardless of what capture is doing, since `pause(for:)`'s timer completion depends on it
+    /// even while capture is already paused for some other reason. Only PAUSES (and only marks the
+    /// pause as system-initiated via `isScreenLockPaused`) while capture is actually `.running` — if
+    /// it's already `.paused` (user disabled it, or mid "Pause for an Hour") or `.unavailable` (no
+    /// camera), there's nothing for this signal to do to `capture`, and critically `isScreenLockPaused`
+    /// must stay `false` so the matching unlock/wake never resumes a pause it didn't cause.
     private func handleScreenPauseSignal(reason: String) {
+        isScreenLocked = true
         guard case .running = capture.state else { return }
         isScreenLockPaused = true
         capture.pause(reason: reason)
     }
 
-    /// Resumes only if `isScreenLockPaused` is still set — i.e. nothing user-initiated (master
-    /// toggle, "Pause for an Hour") has happened since the matching lock/sleep signal paused capture.
-    /// `capture.resume()` itself only transitions out of `.paused`, so this is additionally safe
-    /// even if `state` somehow became `.unavailable` in between.
+    /// Clears `isScreenLocked` unconditionally (mirrors `handleScreenPauseSignal` always setting
+    /// it), then resumes only if `isScreenLockPaused` is still set — i.e. nothing user-initiated
+    /// (master toggle, "Pause for an Hour") has happened since the matching lock/sleep signal paused
+    /// capture, AND `pause(for:)`'s timer completion didn't already resume before this fired. Also
+    /// what performs the deferred resume when `pause(for:)`'s timer elapsed while still locked (see
+    /// that method's doc comment). `capture.resume()` itself only transitions out of `.paused`, so
+    /// this is additionally safe even if `state` somehow became `.unavailable` in between.
     private func handleScreenResumeSignal() {
+        isScreenLocked = false
         guard isScreenLockPaused else { return }
         isScreenLockPaused = false
         capture.resume()
