@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 /// with that kind's binder body underneath.
 ///
 /// Switching segments never touches `store` — it only changes which binder is SHOWN. Nothing is
-/// written until a binder's own capture/Save actually commits, so browsing the other three
+/// written until a binder's own capture/Save actually commits, so browsing the other four
 /// segments can never accidentally clear an existing binding (brief requirement 3).
 struct ActionBinderView: View {
     var entry: CatalogEntry

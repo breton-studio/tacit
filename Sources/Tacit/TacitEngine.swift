@@ -154,6 +154,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
     /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
     private static let firstFireCelebratedKey = "tacit.firstFireCelebrated"
+    /// Final-review finding F1: the v1 set of static poses that support hold lifecycle
+    /// (began/ended), shared as the SINGLE source of truth between `holdTracker`'s `init` below
+    /// and `handleFire(_:)`'s holdable-`.holdKeystroke` guard — previously only the `HoldTracker`
+    /// init knew this set, so `handleFire(_:)` had no way to ask "is this gesture's hold path
+    /// going to own this fire" and dispatched every fire's binding unconditionally, racing the
+    /// hold path's own synchronous key-down (see `handleFire(_:)`'s doc comment for the full
+    /// story).
+    static let holdableGestures: Set<GestureID> = [.indexPoint, .thumbsUp, .victory]
 
     private let capture = CaptureEngine()
     private var pipeline: PipelineCore?
@@ -242,11 +250,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// ask one question: is Accessibility trusted right now.
     private var enabledKeystrokeBindingExists = false
 
-    /// M3 Task 9: tracks whether a holdable static pose ([`.indexPoint`, `.thumbsUp`, `.victory`])
-    /// is currently being held, independent of whether it's bound to `.holdKeystroke` — see
+    /// M3 Task 9: tracks whether a holdable static pose (`Self.holdableGestures`) is currently
+    /// being held, independent of whether it's bound to `.holdKeystroke` — see
     /// `apply(_:generation:timestamp:)`'s doc comment for the full per-frame wiring, and
     /// `HoldTracker`'s own doc comment for why a stuck-down key is impossible by construction.
-    private var holdTracker = HoldTracker(holdableGestures: [.indexPoint, .thumbsUp, .victory])
+    private var holdTracker = HoldTracker(holdableGestures: TacitEngine.holdableGestures)
     /// Mirrors `holdTracker`'s own began/ended state — `true` from the frame a `.began` is seen
     /// through the frame its matching `.ended` is seen, regardless of binding. Used ONLY to decide
     /// whether to keep extending the arbitration command window each frame (a hold not bound to
@@ -879,9 +887,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// key-release bookkeeping (`isHoldActive`, `activeHoldChord`) and returns the `KeyChord` a
     /// caller must post a key-up for — `nil` if no key-down was ever actually sent for the hold
     /// that just ended (not bound to `.holdKeystroke`, Accessibility wasn't trusted, etc., in
-    /// which case there is nothing to release). Only the POSTING mechanism differs between the two
-    /// callers (both now synchronous, post-review-fix — see `handleHoldBegan(_:)`'s doc comment);
-    /// this helper is the bookkeeping they share.
+    /// which case there is nothing to release). Both `handleHoldEnded(_:)` and
+    /// `handleApplicationWillTerminate()` post the resulting key-up the same way — synchronously,
+    /// on the main actor (see `handleHoldBegan(_:)`'s doc comment for why that's required) — so
+    /// only the ENTRY GATE differs between the two callers: `handleHoldEnded(_:)` is reached via
+    /// the organic pose-loss/forced-reset paths above, while `handleApplicationWillTerminate()`
+    /// gates on its own `holdTracker.reset()` call instead of going through
+    /// `endActiveHoldIfNeeded()`. This helper is the bookkeeping both share.
     private func releaseActiveHold() -> KeyChord? {
         isHoldActive = false
         defer { activeHoldChord = nil }
@@ -938,6 +950,35 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private func handleFire(_ event: GestureEvent) {
         let binding = mappingStore.binding(for: event.gesture)
         guard binding.enabled, let action = binding.action else { return }
+
+        // Final-review finding F1 (CRITICAL): a `.holdKeystroke` binding on a HOLDABLE gesture
+        // (`Self.holdableGestures`) must never be dispatched from here. `apply(_:generation:
+        // timestamp:)` feeds this SAME fired event into `holdTracker.ingest` on this SAME frame,
+        // and `HoldTracker.ingest` begins a hold precisely when a holdable gesture just fired AND
+        // its candidate still names that gesture on this same frame — which a static pose fire
+        // always satisfies (a static fire only happens because the pose IS currently classifying,
+        // so `.began` is guaranteed on this very frame; see `HoldTracker.ingest`'s doc comment).
+        // `handleHoldBegan(_:)` then posts the key-down itself, synchronously, and
+        // `handleHoldEnded(_:)` posts the matching key-up when the pose is released — the hold
+        // path owns this binding's ENTIRE down/up lifecycle. Dispatching it again here would race
+        // that synchronous key-down with a detached full press-and-release, AND — because a fired
+        // event re-arrives roughly every ~0.9s while the pose keeps being held (armed
+        // re-debounce + cooldown) — silently re-post a full key press every ~0.9s for the rest of
+        // the hold. Returning here before the `Task.detached` dispatch also skips
+        // `applyDispatchOutcome`'s celebratory-first-fire bookkeeping and HUD `.show` entirely —
+        // correctly: the hold's own HUD chip (`handleHoldBegan(_:)`'s `hudController.showHold`) is
+        // already the feedback for this fire. The glyph's `.fired` pulse (`pulseFired()`, called
+        // unconditionally in `apply(_:generation:timestamp:)` before this method runs) still
+        // happens on every repeat fire regardless — that's driven by the pipeline path above this
+        // method, not by anything below, so this guard can't reach it; harmless and acceptable.
+        //
+        // Momentary gestures bound to `.holdKeystroke` (never in `holdableGestures`, since they
+        // can't produce a `HoldTracker` began/ended pair at all) are NOT covered by this guard —
+        // they keep falling through to `ActionDispatcher.dispatch`'s `.holdKeystroke` fallback,
+        // which performs the full down-then-up press documented on that case.
+        if case .holdKeystroke = action, Self.holdableGestures.contains(event.gesture) {
+            return
+        }
 
         // `ActionDispatcher.dispatch` must NEVER be called from the main actor: `.keystroke`
         // synchronously posts a `CGEvent`, `.runShortcut` blocks on `Process.waitUntilExit()`

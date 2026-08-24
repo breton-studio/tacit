@@ -109,6 +109,26 @@ private func candidate(_ gesture: GestureID?, at t: TimeInterval, conf: Double =
     #expect(tracker.reset() == nil)
 }
 
+// MARK: 7. F1 regression guard — fire frame == candidate frame == began frame
+
+/// Final-review finding F1 (`Sources/Tacit/TacitEngine.swift`'s `handleFire(_:)`): the fix there
+/// relies on an invariant this type already guarantees and this test pins down explicitly, since
+/// `TacitEngine` itself lives in the app-executable target and has no test target to exercise it
+/// directly. The invariant: a STATIC pose's fire and its `.began` land on the exact same
+/// `ingest(...)` call, for every gesture in the holdable set — never one frame apart. That's what
+/// lets `handleFire(_:)` safely conclude "if this fired holdable gesture is bound to
+/// `.holdKeystroke`, the hold path's own `.began` is guaranteed on this same frame, so I must not
+/// also dispatch it" without ever risking a frame where the hold hasn't started yet and the
+/// gesture would otherwise go completely undispatched.
+@Test func holdableGestureFireAlwaysBeginsOnTheSameFrame_F1RegressionGuard() {
+    for gesture in [GestureID.indexPoint, .thumbsUp, .victory] {
+        var tracker = HoldTracker(holdableGestures: holdables)
+        let fired = GestureEvent(gesture: gesture, timestamp: 5.0)
+        let event = tracker.ingest(fired: fired, candidate: candidate(gesture, at: 5.0), at: 5.0)
+        #expect(event == GestureHoldEvent(gesture: gesture, phase: .began, timestamp: 5.0))
+    }
+}
+
 // MARK: 6. second fire while holding ignored
 
 @Test func secondFireWhileHoldingIsIgnored() {
