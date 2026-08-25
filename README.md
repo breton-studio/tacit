@@ -82,7 +82,7 @@ First launch walks you through onboarding: camera access, Accessibility access, 
 - Flip "Show gesture debug view" in the popover for a floating panel with the live hand constellation, the current reading and its confidence, clutch state, and the last action fired — useful for tuning your hand/camera setup against what Tacit is actually seeing.
 - Sensitivity (Relaxed / Standard / Eager) lives in the Settings tab if gestures feel too twitchy or too reluctant.
 - "Pause for an hour" in the popover suspends recognition without quitting the app; it flips to "Resume" while paused.
-- If Tacit crashes (or is force-quit) while a hold-keystroke like Fn is down, the key can be left stuck — tap the gesture once more after relaunching to release it.
+- If Tacit crashes (or is force-quit) while a hold or toggle keystroke like Fn is down, the key can be left stuck — tap the physical key once (Fn, usually) to release it; a normal quit releases it for you.
 
 ## How it works (for the curious)
 
