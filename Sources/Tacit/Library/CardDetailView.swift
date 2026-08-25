@@ -36,8 +36,31 @@ struct CardDetailView: View {
     /// entrances).
     @State private var isTryItActive = false
 
+    /// 2026-08-24 fix ("choosing Switch App and clicking Done kept the old binding"): which Action
+    /// Type segment `ActionBinderView` is currently showing, lifted here (rather than kept as that
+    /// view's own private state) so `handleDone()` below can flush a no-further-input kind
+    /// (`.switchApp`/`.focusTextInput`) that somehow never committed — belt-and-braces on top of
+    /// those binders' own onAppear-commit fix in `ActionBinders.swift`. Initialized in `init` below
+    /// from the entry's CURRENT binding, exactly as `ActionBinderView`'s own `@State` used to be.
+    @State private var selectedActionKind: ActionKind
+
     private static let cornerRadius: CGFloat = 20
     private static let width: CGFloat = 520
+
+    init(
+        entry: CatalogEntry,
+        store: MappingStore,
+        engine: TacitEngine,
+        onDone: @escaping () -> Void,
+        maxHeight: CGFloat = 560
+    ) {
+        self.entry = entry
+        self.store = store
+        self.engine = engine
+        self.onDone = onDone
+        self.maxHeight = maxHeight
+        _selectedActionKind = State(initialValue: ActionKind(matching: store.binding(for: entry.id).action))
+    }
 
     var body: some View {
         ScrollView {
@@ -157,7 +180,7 @@ struct CardDetailView: View {
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                ActionBinderView(entry: entry, store: store)
+                ActionBinderView(entry: entry, store: store, selectedKind: $selectedActionKind)
             }
         }
     }
@@ -233,9 +256,37 @@ struct CardDetailView: View {
     }
 
     private var doneButton: some View {
-        Button("Done", action: onDone)
+        Button("Done", action: handleDone)
             .buttonStyle(TacitButtonStyle())
             .keyboardShortcut(.defaultAction)
+    }
+
+    /// 2026-08-24 fix: belt-and-braces on top of `SwitchAppBinder`/`FocusTextInputBinder`'s own
+    /// onAppear-commit fix (`ActionBinders.swift`) — flushes a no-further-input Type selection that
+    /// somehow never made it into `store` before collapsing the card, so Done can never silently
+    /// drop a remap. `.switchApp` falls back to `.next` here (this path should only ever be a
+    /// no-op; the binder's own onAppear is what actually knows the currently-displayed direction).
+    private func handleDone() {
+        flushPendingActionTypeIfNeeded()
+        onDone()
+    }
+
+    private func flushPendingActionTypeIfNeeded() {
+        guard !entry.isReserved else { return }
+        switch selectedActionKind {
+        case .switchApp:
+            guard case .switchApp = store.binding(for: entry.id).action else {
+                store.setBinding(GestureBinding(enabled: true, action: .switchApp(.next)), for: entry.id)
+                return
+            }
+        case .focusTextInput:
+            guard case .focusTextInput = store.binding(for: entry.id).action else {
+                store.setBinding(GestureBinding(enabled: true, action: .focusTextInput), for: entry.id)
+                return
+            }
+        case .keystroke, .launchApp, .openURL, .runShortcut:
+            break
+        }
     }
 
     private var enabledBinding: Binding<Bool> {

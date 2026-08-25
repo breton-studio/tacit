@@ -30,7 +30,11 @@ struct ActionBinderView: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
 
-    @State private var selectedKind: ActionKind
+    /// 2026-08-24 fix: lifted out of local `@State` into a `@Binding` owned by `CardDetailView`, so
+    /// `CardDetailView.doneButton`'s belt-and-braces flush (see its doc comment) can see which Type
+    /// is currently selected without reaching into this view's private state — the two views now
+    /// share one source of truth for "what Type is showing" instead of each keeping their own copy.
+    @Binding var selectedKind: ActionKind
     /// Task 20 (spec §6): whether Accessibility is currently trusted, polled while this view is
     /// visible so `accessibilityNotice` below reflects a grant/revoke made in System Settings
     /// without requiring the card to be closed and reopened. `AXIsProcessTrusted()` has no
@@ -39,10 +43,10 @@ struct ActionBinderView: View {
     @State private var isAccessibilityTrusted = AXIsProcessTrusted()
     @State private var accessibilityPollTask: Task<Void, Never>?
 
-    init(entry: CatalogEntry, store: MappingStore) {
+    init(entry: CatalogEntry, store: MappingStore, selectedKind: Binding<ActionKind>) {
         self.entry = entry
         self.store = store
-        _selectedKind = State(initialValue: ActionKind(matching: store.binding(for: entry.id).action))
+        self._selectedKind = selectedKind
     }
 
     var body: some View {
@@ -156,7 +160,11 @@ struct ActionBinderView: View {
 
 /// The five bindable action kinds, in the brief's fixed order. Distinct from `TacitAction` itself
 /// so the segmented picker has something to select over before any action value exists yet.
-private enum ActionKind: CaseIterable, Identifiable, Hashable {
+///
+/// Not `private` (2026-08-24 fix): `CardDetailView` now owns the `@State` this drives (see
+/// `ActionBinderView.selectedKind`'s doc comment), so the type needs to be visible outside this
+/// file — still `internal` (module-only), not `public`.
+enum ActionKind: CaseIterable, Identifiable, Hashable {
     case keystroke, launchApp, openURL, runShortcut, focusTextInput, switchApp
 
     var id: Self { self }
@@ -523,8 +531,13 @@ private struct ShortcutBinder: View {
 // MARK: - Focus Input (M3 Task 10)
 
 /// No configuration to capture — unlike the other four binders, `.focusTextInput` carries no
-/// associated value, so this is just a quiet one-line description plus a Save button that
-/// commits the fixed action value directly.
+/// associated value, so this is just a quiet one-line description plus a Save button.
+///
+/// 2026-08-24 fix: commits on appear now (see `SwitchAppBinder`'s doc comment for the failure this
+/// closes — same root cause, a "no further input needed" kind that only committed on an explicit
+/// user action). The Save button stays as a re-confirm: `save()` is idempotent (writing the same
+/// fixed action value again is harmless), so it's safe to leave mounted rather than pull it and
+/// risk this being the one binder in the row without a visible confirmation affordance.
 private struct FocusTextInputBinder: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
@@ -538,6 +551,17 @@ private struct FocusTextInputBinder: View {
             Button("Save") { save() }
                 .buttonStyle(TacitButtonStyle())
         }
+        .onAppear { commitIfNeeded() }
+    }
+
+    /// Writes `.focusTextInput` the instant this binder mounts, unless the store already holds
+    /// that exact action — preserving an existing (possibly disabled) `.focusTextInput` binding's
+    /// `enabled` state instead of stomping it back to enabled just for being looked at.
+    private func commitIfNeeded() {
+        guard case .focusTextInput = store.binding(for: entry.id).action else {
+            save()
+            return
+        }
     }
 
     private func save() {
@@ -549,6 +573,17 @@ private struct FocusTextInputBinder: View {
 
 /// No chord to record — a two-segment Next / Previous picker saves immediately on selection,
 /// exactly like `FocusTextInputBinder`'s single Save button has no configuration to gather first.
+///
+/// 2026-08-24 fix ("choosing Switch App and clicking Done kept the old binding"): selecting the
+/// Type dropdown's "Switch App" segment mounts this view — but until this fix, nothing was WRITTEN
+/// until `direction` actually changed. If the store's live binding already happened to differ from
+/// this segment's kind (e.g. still a keystroke) and the user's eye landed on "Next" — already
+/// selected, since `direction` defaults to `.next` — re-selecting the already-selected segment is a
+/// SwiftUI no-op: `.onChange` never fires, so `store.setBinding` never runs, and Done collapses the
+/// sheet with the old action still bound. `commitIfNeeded()` below closes that gap the same way
+/// `FocusTextInputBinder` now does: mounting this binder for a kind the store doesn't already hold
+/// commits immediately, with `direction`'s current (possibly just-defaulted) value — matching this
+/// segment's own displayed selection rather than silently defaulting past it.
 private struct SwitchAppBinder: View {
     var entry: CatalogEntry
     @ObservedObject var store: MappingStore
@@ -582,5 +617,18 @@ private struct SwitchAppBinder: View {
                 store.setBinding(GestureBinding(enabled: true, action: .switchApp(newValue)), for: entry.id)
             }
         }
+        .onAppear { commitIfNeeded() }
+    }
+
+    /// Writes `.switchApp(direction)` the instant this binder mounts, UNLESS the store's binding
+    /// is already some `.switchApp` — in which case `init` above already read that exact direction
+    /// into `direction`, so leaving the store untouched preserves whatever `enabled` state it
+    /// already carried instead of stomping a disabled binding back to enabled just for being
+    /// looked at.
+    private func commitIfNeeded() {
+        if case .switchApp = store.binding(for: entry.id).action {
+            return
+        }
+        store.setBinding(GestureBinding(enabled: true, action: .switchApp(direction)), for: entry.id)
     }
 }
