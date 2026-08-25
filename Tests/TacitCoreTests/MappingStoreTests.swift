@@ -59,18 +59,18 @@ private let legacyWorkflowDefaultsAppliedKey = "tacit.workflowDefaultsApplied"
 
 private let fn = KeyChord(keyCode: 63, modifiers: [])
 
-// MARK: - First launch defaults (revision 7: 2026-08-24 "replace the hand swipes with a palm
-// tilt" ruling on the "all four hand swipes switch apps" ruling, the ring/pinky-tap-overlap
-// ruling, the app-switch ruling, and the workhorse remap)
+// MARK: - First launch defaults (revision 8: 2026-08-24 "thumb taps switch apps too" ruling on
+// the "replace the hand swipes with a palm tilt" ruling, the "all four hand swipes switch apps"
+// ruling, the ring/pinky-tap-overlap ruling, the app-switch ruling, and the workhorse remap)
 
 @MainActor
 @Test func firstLaunchHasTheWorkhorseCoreEnabledOnTheRevisionFiveDefaults() {
     let store = MappingStore(directory: makeTempDirectory(), userDefaults: makeTempUserDefaults())
 
     #expect(store.binding(for: .thumbIndexTap) ==
-        GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command])))) // ⌘C
+        GestureBinding(enabled: true, action: .switchApp(.previous)))
     #expect(store.binding(for: .thumbMiddleTap) ==
-        GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command])))) // ⌘V
+        GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .thumbsUp) == GestureBinding(enabled: true, action: .focusTextInput))
     #expect(store.binding(for: .thumbSwipeBackward) ==
         GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command])))) // ⌘Z
@@ -305,7 +305,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     // disabled/no-action default — exactly rev 7's `old` — and pick up their enabled defaults.
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.version == 2)
@@ -376,7 +376,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     // disabled/no-action default — exactly rev 7's `old` — and pick up their enabled defaults.
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 }
 
 // MARK: - Defaults revision 4 (2026-08-24 app-switch ruling)
@@ -410,7 +410,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
     // Untouched by rev 4/5/6/7 (no entry) — stays exactly as the file had it, not the rev-3 topped-up value.
     #expect(store.binding(for: .thumbsUp) == rev2ThumbsUp)
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.bindings["swipeRight"] == GestureBinding(enabled: false, action: .switchApp(.next)))
@@ -441,7 +441,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: false, action: .switchApp(.previous)))
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 }
 
 // MARK: - Defaults revision 5 (2026-08-24 ring/pinky-tap-overlap ruling)
@@ -470,7 +470,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     // this file's stored revision is well below `currentDefaultsRevision`) tops them up too.
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.bindings["victory"] == GestureBinding(enabled: true, action: .toggleKeystroke(fn)))
@@ -494,7 +494,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
 
     #expect(store.binding(for: .victory) == usersVictory)
     #expect(store.binding(for: .thumbRingPinkyTap) == GestureBinding(enabled: false, action: nil))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 }
 
 // MARK: - Defaults revision 6 (2026-08-24 "all four hand swipes switch apps" ruling)
@@ -524,7 +524,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
     #expect(store.binding(for: .thumbsUp) == rev2ThumbsUp)
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.bindings["swipeUp"] == GestureBinding(enabled: false, action: .switchApp(.previous)))
@@ -549,7 +549,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
 
     #expect(store.binding(for: .swipeUp) == usersSwipeUp)
     #expect(store.binding(for: .swipeDown) == GestureBinding(enabled: false, action: .switchApp(.next)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 }
 
 /// Once stamped at the current revision, a later load never re-applies — a user who turns the
@@ -595,7 +595,7 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
     #expect(store.binding(for: .thumbsUp) == rev2ThumbsUp)
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 
     let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
     #expect(onDisk.bindings["swipeRight"] == GestureBinding(enabled: false, action: .switchApp(.next)))
@@ -627,7 +627,58 @@ private let rev2RingPinky = GestureBinding(enabled: false, action: nil)
     #expect(store.binding(for: .swipeLeft) == GestureBinding(enabled: false, action: .switchApp(.previous)))
     #expect(store.binding(for: .palmTiltRight) == GestureBinding(enabled: true, action: .switchApp(.next)))
     #expect(store.binding(for: .palmTiltLeft) == GestureBinding(enabled: true, action: .switchApp(.previous)))
-    #expect(flags.integer(forKey: defaultsRevisionKey) == 7)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
+}
+
+// MARK: - Defaults revision 8 (2026-08-24 "thumb taps switch apps too" ruling)
+
+/// The realistic scenario for anyone who installed after the "replace the hand swipes with a palm
+/// tilt" ruling (rev 7) shipped: a file already stamped at revision 7, sitting exactly on the
+/// still-untouched ⌘C/⌘V thumb-tap defaults (rev 7 never touched them). Rev 8's changes move both
+/// onto `.switchApp`, matching the palm-tilt pair; everything else is untouched.
+@MainActor
+@Test func untouchedRevisionSevenFileMovesToRevisionEight() throws {
+    let dir = makeTempDirectory()
+    let rev7ThumbIndexTap = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command]))) // ⌘C
+    let rev7ThumbMiddleTap = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command]))) // ⌘V
+    let fileURL = try writeV2File([
+        "thumbIndexTap": rev7ThumbIndexTap, "thumbMiddleTap": rev7ThumbMiddleTap,
+        "thumbsUp": rev2ThumbsUp, // deliberately NOT touched by rev 8 — proves it's untouched
+    ], in: dir)
+    let flags = makeTempUserDefaults()
+    flags.set(7, forKey: defaultsRevisionKey) // already fully topped up to rev 7
+
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    #expect(store.binding(for: .thumbIndexTap) == GestureBinding(enabled: true, action: .switchApp(.previous)))
+    #expect(store.binding(for: .thumbMiddleTap) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(store.binding(for: .thumbsUp) == rev2ThumbsUp)
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
+
+    let onDisk = try JSONDecoder().decode(V2MappingsFile.self, from: Data(contentsOf: fileURL))
+    #expect(onDisk.bindings["thumbIndexTap"] == GestureBinding(enabled: true, action: .switchApp(.previous)))
+    #expect(onDisk.bindings["thumbMiddleTap"] == GestureBinding(enabled: true, action: .switchApp(.next)))
+}
+
+/// A rev-7-stamped file with thumbIndexTap already customized — not exactly rev 8's `old` value —
+/// keeps its customization, while its untouched neighbour (thumbMiddleTap) still moves to rev 8's
+/// `.switchApp` result.
+@MainActor
+@Test func customizedThumbIndexTapSurvivesRevisionEightTopUp() throws {
+    let dir = makeTempDirectory()
+    let usersThumbIndexTap = GestureBinding(enabled: true, action: .runShortcut(name: "Cycle Windows")) // fully customized
+    let rev7ThumbMiddleTap = GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command]))) // ⌘V
+    _ = try writeV2File([
+        "thumbIndexTap": usersThumbIndexTap, "thumbMiddleTap": rev7ThumbMiddleTap,
+    ], in: dir)
+    let flags = makeTempUserDefaults()
+    flags.set(7, forKey: defaultsRevisionKey)
+
+    let store = MappingStore(directory: dir, userDefaults: flags)
+
+    #expect(store.binding(for: .thumbIndexTap) == usersThumbIndexTap)
+    #expect(store.binding(for: .thumbMiddleTap) == GestureBinding(enabled: true, action: .switchApp(.next)))
+    #expect(flags.integer(forKey: defaultsRevisionKey) == 8)
 }
 
 // MARK: - Reserved gestures are never bindable

@@ -29,11 +29,12 @@ requests camera permission at launch, alongside a short first-run onboarding: Ac
 permission, learning the clutch, and a look at the preset gesture bindings you start with — among
 them the workflow defaults: tilt your open palm left/right to flip apps — lean right → next, lean
 left → previous, directly (no ⌘Tab, no switcher UI; the hand swipes still recognize but ship off,
-since they weren't being detected reliably for everyone), a thumbs-up focuses the nearest text
+since they weren't being detected reliably for everyone) — a thumb–middle tap → next app,
+thumb–index tap → previous app (palm tilts do the same), a thumbs-up focuses the nearest text
 field, holding a point gesture holds
 down Fn — Wispr Flow's stock push-to-talk hotkey — and a victory (✌️) sign *toggles* Fn for
 hands-free dictation until you make it again (the menu bar popover shows a "Release" row while it's
-held). Copy, paste, undo and redo ride the thumb taps and thumb swipes. Everything else ships off;
+held). Undo and redo ride the thumb swipes. Everything else ships off;
 every binding is rebindable in the Library, where a keystroke can be delivered as a press, a hold,
 or a toggle. The
 clutch itself is optional and off by default for now — gestures fire the moment they're

@@ -209,7 +209,7 @@ public final class MappingStore: ObservableObject {
 
     /// The revision `defaultBindings()` currently represents. Bump it and append a
     /// `DefaultsRevision` whenever a default VALUE changes for existing users.
-    public static let currentDefaultsRevision = 7
+    public static let currentDefaultsRevision = 8
 
     /// `UserDefaults` key holding the revision an install has been topped up to (Int).
     static let defaultsRevisionKey = "tacit.defaultsRevision"
@@ -346,6 +346,20 @@ public final class MappingStore: ObservableObject {
                 new: GestureBinding(enabled: true, action: .switchApp(.previous))
             ),
         ]),
+        // 2026-08-24 product ruling: the thumb-tap pair also switches apps, matching the palm
+        // tilts (rev 7) — thumb-middle tap moves forward, thumb-index tap moves backward. This
+        // frees ⌘V/⌘C off the two highest-frequency gestures; paste/copy stay available to bind
+        // manually via the Keystroke action kind, they just aren't the factory default any more.
+        DefaultsRevision(revision: 8, changes: [
+            .thumbMiddleTap: (
+                old: GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command]))), // ⌘V
+                new: GestureBinding(enabled: true, action: .switchApp(.next))
+            ),
+            .thumbIndexTap: (
+                old: GestureBinding(enabled: true, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command]))), // ⌘C
+                new: GestureBinding(enabled: true, action: .switchApp(.previous))
+            ),
+        ]),
     ]
 
     /// The revision this install was last topped up to: the Int key if present; else 2 if the
@@ -403,23 +417,21 @@ public final class MappingStore: ObservableObject {
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    /// The factory bindings (spec §3.6, defaults revision 7 — the 2026-08-24 "replace the hand
-    /// swipes with a palm tilt for app-switching" ruling on top of the "all four hand swipes
-    /// switch apps" ruling, the ring/pinky-tap-overlap ruling, the app-switch ruling, and the
-    /// workhorse remap): nine enabled user commands (down from eleven — the four hand swipes move
-    /// to disabled, replaced by the two-gesture palm-tilt pair), the two reserved clutch/disarm
-    /// gestures, and sensible-but-disabled suggestions (or `nil`, for continuous gestures with no
-    /// discrete action yet) for everything else.
+    /// The factory bindings (spec §3.6, defaults revision 8 — the 2026-08-24 "thumb taps switch
+    /// apps too" ruling on top of the "replace the hand swipes with a palm tilt for app-switching"
+    /// ruling, the "all four hand swipes switch apps" ruling, the ring/pinky-tap-overlap ruling,
+    /// the app-switch ruling, and the workhorse remap): nine enabled user commands, the two
+    /// reserved clutch/disarm gestures, and sensible-but-disabled suggestions (or `nil`, for
+    /// continuous gestures with no discrete action yet) for everything else.
     public static func defaultBindings() -> [GestureID: GestureBinding] {
         var bindings: [GestureID: GestureBinding] = [:]
 
-        // Enabled — the high-frequency workhorse core.
-        bindings[.thumbIndexTap] = GestureBinding(
-            enabled: true, action: .keystroke(KeyChord(keyCode: 8, modifiers: [.command])) // ⌘C
-        )
-        bindings[.thumbMiddleTap] = GestureBinding(
-            enabled: true, action: .keystroke(KeyChord(keyCode: 9, modifiers: [.command])) // ⌘V
-        )
+        // Enabled — the high-frequency workhorse core. Defaults revision 8: thumb-index/thumb-
+        // middle taps switch apps directly, matching the palm-tilt pair (rev 7) — thumb-middle
+        // moves forward, thumb-index moves backward. (⌘C/⌘V are still bindable manually via the
+        // Keystroke action kind; they're just no longer the factory default here.)
+        bindings[.thumbIndexTap] = GestureBinding(enabled: true, action: .switchApp(.previous))
+        bindings[.thumbMiddleTap] = GestureBinding(enabled: true, action: .switchApp(.next))
         bindings[.thumbSwipeBackward] = GestureBinding(
             enabled: true, action: .keystroke(KeyChord(keyCode: 6, modifiers: [.command])) // ⌘Z
         )
