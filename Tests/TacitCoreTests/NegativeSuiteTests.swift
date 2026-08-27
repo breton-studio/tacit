@@ -84,9 +84,25 @@ struct NegativeSuiteTests {
     /// 3. If both return an event on the same frame, the momentary one wins, matching
     ///    `PipelineCore.process`'s ledger-drop rule exactly.
     ///
+    /// Convenience overload: builds a fresh `ArbitrationEngine(tuning:)` and delegates to the
+    /// engine-based overload below. `tuning` defaults to `ArbitrationTuning()` — the clutch-on
+    /// default — so every call site that doesn't pass `tuning` explicitly (i.e. every clutch-on
+    /// leg in this file, before and after Finding 1's task (a)) is byte-for-byte unchanged.
+    /// Callers that need to replay into an *already-mutated* engine (`preArmedEngine()`'s pre-armed
+    /// informational legs) use the `engine:` overload directly instead.
+    static func replayThroughFullChain(
+        frames: [LandmarkFrame], tuning: ArbitrationTuning = ArbitrationTuning()
+    ) -> (events: [GestureEvent], everArmed: Bool) {
+        replayThroughFullChain(frames: frames, engine: ArbitrationEngine(tuning: tuning))
+    }
+
     /// Returns every fired `GestureEvent`, in order, and `everArmed` — whether `engine.state` was
     /// ever observed as `.armed` at any point during replay (i.e. whether an arming hold ever
-    /// crossed the clutch threshold; see `ArbitrationTuning.clutchHold`).
+    /// crossed the clutch threshold; see `ArbitrationTuning.clutchHold`). `everArmed` is
+    /// meaningless for a clutch-off `engine` — `ArbitrationEngine.init` sets
+    /// `state = .armed(.infinity)` immediately when `tuning.requiresClutch == false`
+    /// (`ArbitrationEngine.swift:136`), so `everArmed` is `true` by construction, not by anything
+    /// this replay does. Clutch-off callers below only read `.events`.
     static func replayThroughFullChain(
         frames: [LandmarkFrame], engine: ArbitrationEngine
     ) -> (events: [GestureEvent], everArmed: Bool) {
@@ -400,8 +416,7 @@ struct NegativeSuiteTests {
     @Test(arguments: Self.sweepSeeds)
     func syntheticTypingStreamNeverFiresOrArmsWhileDisarmed(seed: UInt64) {
         let frames = Self.syntheticTypingStream(seed: seed)
-        let engine = ArbitrationEngine()
-        let result = Self.replayThroughFullChain(frames: frames, engine: engine)
+        let result = Self.replayThroughFullChain(frames: frames, tuning: ArbitrationTuning())
         #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired an event while disarmed")
         #expect(!result.everArmed, "seed 0x\(String(seed, radix: 16)) armed the clutch while disarmed")
     }
@@ -409,10 +424,79 @@ struct NegativeSuiteTests {
     @Test(arguments: Self.sweepSeeds)
     func syntheticConversationStreamNeverFiresOrArmsWhileDisarmed(seed: UInt64) {
         let frames = Self.syntheticConversationStream(seed: seed)
-        let engine = ArbitrationEngine()
-        let result = Self.replayThroughFullChain(frames: frames, engine: engine)
+        let result = Self.replayThroughFullChain(frames: frames, tuning: ArbitrationTuning())
         #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired an event while disarmed")
         #expect(!result.everArmed, "seed 0x\(String(seed, radix: 16)) armed the clutch while disarmed")
+    }
+
+    // MARK: - Disarmed assertions, clutch-off mode (Finding 1, task (a))
+    //
+    // Everything above this point runs `ArbitrationTuning()` — `requiresClutch = true` — which is
+    // NOT what the app ships (`Sources/Tacit/TacitEngine.swift:357`:
+    // `self.requiresClutch = storedRequiresClutch ?? false`). In clutch-off mode
+    // `ArbitrationEngine.init` sets `state = .armed(.infinity)` immediately
+    // (`ArbitrationEngine.swift:136`), so `everArmed` is `true` by construction and every
+    // assertion above is structurally inapplicable to the shipped default. The legs below measure
+    // the shipped configuration directly: same streams, same 11-seed sweep, `clutchOffTuning`
+    // (`requiresClutch = false`, every other field left at its default — NOT tuned to pass, see
+    // `EXECUTION-LOG.md`), asserting only `result.events.isEmpty`. `everArmed` is dropped entirely
+    // — it carries no information here. These legs are EXPECTED TO FAIL and are wrapped in
+    // `withKnownIssue` so a real synthetic-noise false-positive rate is visible in every run
+    // without red-blocking `./scripts/test.sh`; if a leg unexpectedly passes, `withKnownIssue`'s
+    // default (`isIntermittent: false`) reports that too, it is not silently swallowed.
+
+    /// Shipped default (`TacitEngine.swift:357`): `requiresClutch = false`. Every other field is
+    /// left at `ArbitrationTuning()`'s default — per Finding 1's standing decision, this suite
+    /// does not raise `clutchOffConfidenceBoost` or `debounceFrames` to make the legs below pass;
+    /// doing so would fit the synthetic noise generator, not real hands.
+    static var clutchOffTuning: ArbitrationTuning {
+        var tuning = ArbitrationTuning()
+        tuning.requiresClutch = false
+        return tuning
+    }
+
+    /// Per-gesture breakdown of `events`, sorted by raw gesture name for deterministic output —
+    /// e.g. `"thumbIndexTap:12, victory:3"`. Empty string when `events` is empty. This — plus the
+    /// event count each caller prints alongside it — is the per-seed/per-stream/per-gesture data
+    /// Finding 1's task (a) requires recorded in `EXECUTION-LOG.md`.
+    static func gestureBreakdown(_ events: [GestureEvent]) -> String {
+        let counts = Dictionary(grouping: events, by: { $0.gesture }).mapValues(\.count)
+        return counts
+            .sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.rawValue):\($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    /// Shared `withKnownIssue` explanation for every clutch-off leg below — kept in one place so
+    /// the reasoning (and the standing no-tuning decision) reads identically at every call site.
+    static let clutchOffKnownIssueComment: Comment = """
+        Finding 1 (docs/CODE-REVIEW-2026-08-27.md): the app ships requiresClutch = false \
+        (TacitEngine.swift:357), where ArbitrationEngine.init arms .armed(.infinity) immediately, \
+        so this measures the shipped configuration directly and is EXPECTED TO FAIL. Do not raise \
+        clutchOffConfidenceBoost or debounceFrames to force this green — standing decision, \
+        EXECUTION-LOG.md — that would fit the synthetic noise generator, not real hands. Actual \
+        counts are printed above and recorded in EXECUTION-LOG.md; item (f) (reopening the \
+        clutch-off default) is a separate, later product decision.
+        """
+
+    @Test(arguments: Self.sweepSeeds)
+    func syntheticTypingStreamFiresWhileClutchOff(seed: UInt64) {
+        let frames = Self.syntheticTypingStream(seed: seed)
+        let result = Self.replayThroughFullChain(frames: frames, tuning: Self.clutchOffTuning)
+        print("[NegativeSuiteTests] clutch-off seed=0x\(String(seed, radix: 16)) stream=typing: \(result.events.count) event(s) fired — \(Self.gestureBreakdown(result.events))")
+        withKnownIssue(Self.clutchOffKnownIssueComment) {
+            #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired \(result.events.count) event(s) in clutch-off mode: \(Self.gestureBreakdown(result.events))")
+        }
+    }
+
+    @Test(arguments: Self.sweepSeeds)
+    func syntheticConversationStreamFiresWhileClutchOff(seed: UInt64) {
+        let frames = Self.syntheticConversationStream(seed: seed)
+        let result = Self.replayThroughFullChain(frames: frames, tuning: Self.clutchOffTuning)
+        print("[NegativeSuiteTests] clutch-off seed=0x\(String(seed, radix: 16)) stream=conversation: \(result.events.count) event(s) fired — \(Self.gestureBreakdown(result.events))")
+        withKnownIssue(Self.clutchOffKnownIssueComment) {
+            #expect(result.events.isEmpty, "seed 0x\(String(seed, radix: 16)) fired \(result.events.count) event(s) in clutch-off mode: \(Self.gestureBreakdown(result.events))")
+        }
     }
 
     /// Non-failing diagnostic: for every sweep seed, prints whether the stream ever armed/fired
@@ -460,33 +544,78 @@ struct NegativeSuiteTests {
         }
     }
 
-    @Test func recordedTypingNegativeFixturesNeverFireOrArmWhileDisarmed() {
+    // Finding 1 / task (a) step 6: these two legs used to `guard !urls.isEmpty else { print(...);
+    // return }` — a `print` inside a test that otherwise passes trivially is invisible in a green
+    // run, and `Tests/Fixtures/` does not exist in this repo (only `Tests/TacitCoreTests/` does),
+    // so both legs passed vacuously on every run to date. `.disabled(if:)` makes swift-testing
+    // report these as SKIPPED — a distinct, visible status in `./scripts/test.sh` output, not a
+    // checkmark — so a green run can no longer be misread as recorded-hand evidence. Actually
+    // recording fixtures (⌥ in the popover reveals the recorder; `docs/NEXT-STEPS.md:20, 26`) is
+    // user-gated and stays out of scope for this pass.
+
+    @Test(.disabled(
+        if: Self.fixtureURLs(prefix: "typing-negative").isEmpty,
+        "Tests/Fixtures/typing-negative*.json does not exist yet — no recorded-hand negative evidence exists in either clutch mode (docs/CODE-REVIEW-2026-08-27.md Finding 1). Recording fixtures is user-gated and out of scope for this pass; synthetic coverage above still ran."
+    ))
+    func recordedTypingNegativeFixturesNeverFireOrArmWhileDisarmed() {
         let urls = Self.fixtureURLs(prefix: "typing-negative")
-        guard !urls.isEmpty else {
-            print("[NegativeSuiteTests] no typing-negative* fixture found in \(Self.fixturesDirectory.path) — skipping recorded leg (synthetic coverage still ran).")
-            return
-        }
         for url in urls {
             guard let frames = Self.loadFrames(url: url) else { continue }
-            let engine = ArbitrationEngine()
-            let result = Self.replayThroughFullChain(frames: frames, engine: engine)
+            let result = Self.replayThroughFullChain(frames: frames, tuning: ArbitrationTuning())
             #expect(result.events.isEmpty, "recorded fixture \(url.lastPathComponent) fired an event while disarmed")
             #expect(!result.everArmed, "recorded fixture \(url.lastPathComponent) armed the clutch while disarmed")
         }
     }
 
-    @Test func recordedConversationNegativeFixturesNeverFireOrArmWhileDisarmed() {
+    @Test(.disabled(
+        if: Self.fixtureURLs(prefix: "conversation-negative").isEmpty,
+        "Tests/Fixtures/conversation-negative*.json does not exist yet — no recorded-hand negative evidence exists in either clutch mode (docs/CODE-REVIEW-2026-08-27.md Finding 1). Recording fixtures is user-gated and out of scope for this pass; synthetic coverage above still ran."
+    ))
+    func recordedConversationNegativeFixturesNeverFireOrArmWhileDisarmed() {
         let urls = Self.fixtureURLs(prefix: "conversation-negative")
-        guard !urls.isEmpty else {
-            print("[NegativeSuiteTests] no conversation-negative* fixture found in \(Self.fixturesDirectory.path) — skipping recorded leg (synthetic coverage still ran).")
-            return
-        }
         for url in urls {
             guard let frames = Self.loadFrames(url: url) else { continue }
-            let engine = ArbitrationEngine()
-            let result = Self.replayThroughFullChain(frames: frames, engine: engine)
+            let result = Self.replayThroughFullChain(frames: frames, tuning: ArbitrationTuning())
             #expect(result.events.isEmpty, "recorded fixture \(url.lastPathComponent) fired an event while disarmed")
             #expect(!result.everArmed, "recorded fixture \(url.lastPathComponent) armed the clutch while disarmed")
+        }
+    }
+
+    /// Clutch-off twin of the two legs above (Finding 1, task (a) step 2). Same
+    /// `Tests/Fixtures/` absence, so also `.disabled(if:)` today; wired up now so the moment
+    /// recorded fixtures land, this leg measures the shipped clutch-off default against real hands
+    /// instead of only synthetic noise — and, per the same standing decision as the synthetic
+    /// clutch-off legs, is wrapped in `withKnownIssue` because it is expected to fail, not tuned
+    /// to pass.
+    @Test(.disabled(
+        if: Self.fixtureURLs(prefix: "typing-negative").isEmpty,
+        "Tests/Fixtures/typing-negative*.json does not exist yet — clutch-off recorded-hand measurement has nothing to run against (docs/CODE-REVIEW-2026-08-27.md Finding 1). Recording fixtures is user-gated and out of scope for this pass."
+    ))
+    func recordedTypingNegativeFixturesFireWhileClutchOff() {
+        let urls = Self.fixtureURLs(prefix: "typing-negative")
+        for url in urls {
+            guard let frames = Self.loadFrames(url: url) else { continue }
+            let result = Self.replayThroughFullChain(frames: frames, tuning: Self.clutchOffTuning)
+            print("[NegativeSuiteTests] clutch-off recorded fixture \(url.lastPathComponent) (typing): \(result.events.count) event(s) fired — \(Self.gestureBreakdown(result.events))")
+            withKnownIssue(Self.clutchOffKnownIssueComment) {
+                #expect(result.events.isEmpty, "recorded fixture \(url.lastPathComponent) fired \(result.events.count) event(s) in clutch-off mode: \(Self.gestureBreakdown(result.events))")
+            }
+        }
+    }
+
+    @Test(.disabled(
+        if: Self.fixtureURLs(prefix: "conversation-negative").isEmpty,
+        "Tests/Fixtures/conversation-negative*.json does not exist yet — clutch-off recorded-hand measurement has nothing to run against (docs/CODE-REVIEW-2026-08-27.md Finding 1). Recording fixtures is user-gated and out of scope for this pass."
+    ))
+    func recordedConversationNegativeFixturesFireWhileClutchOff() {
+        let urls = Self.fixtureURLs(prefix: "conversation-negative")
+        for url in urls {
+            guard let frames = Self.loadFrames(url: url) else { continue }
+            let result = Self.replayThroughFullChain(frames: frames, tuning: Self.clutchOffTuning)
+            print("[NegativeSuiteTests] clutch-off recorded fixture \(url.lastPathComponent) (conversation): \(result.events.count) event(s) fired — \(Self.gestureBreakdown(result.events))")
+            withKnownIssue(Self.clutchOffKnownIssueComment) {
+                #expect(result.events.isEmpty, "recorded fixture \(url.lastPathComponent) fired \(result.events.count) event(s) in clutch-off mode: \(Self.gestureBreakdown(result.events))")
+            }
         }
     }
 

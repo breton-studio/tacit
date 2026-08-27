@@ -38,6 +38,73 @@ this pass. Finding 1's measurement feeds that decision later; it does not replac
    messaging timeout, drop `DispatchQueue.main.sync`. Largest, and the only public signature
    change — do it last. See review §Finding 4.
 
+
+## (a) RESULT — clutch-off false-positive measurement
+
+**Measured 2026-08-27 at `3cb00f6`. No thresholds were tuned; `Sources/TacitCore/` has zero
+diff. The clutch-off tuning changes `requiresClutch` and nothing else.**
+
+`./scripts/test.sh` → **307 tests, 3 suites, exit 0, with 22 known issues.** All 22 synthetic
+clutch-off legs fire. Zero unexpected passes.
+
+| Stream | Seeds firing | Min | Max | Mean | Total |
+|---|---|---|---|---|---|
+| typing (900 frames / 60 s) | **11 / 11** | 95 | 118 | 104.5 | 1,150 |
+| conversation (450 frames / 30 s) | **11 / 11** | 5 | 11 | 7.9 | 87 |
+
+**≈ 1 spurious gesture every 0.57 s of simulated typing.** Across the typing sweep
+`thumbSwipeBackward` fired **39** times and `thumbSwipeForward` **27** — those are ⌘Z and ⇧⌘Z,
+both enabled factory defaults. Roughly **3.5 spurious undos per minute of typing.**
+
+**Why the boost does not save it:** `clutchOffConfidenceBoost` (+0.15) only raises the *static
+classifier* gate (`effectiveEnterConfidence` / `effectiveStayConfidence`). The gestures actually
+firing are overwhelmingly *momentary* detectors — `thumbIndexTap` (420), `thumbMiddleTap` (292),
+wrist rotate (235), `thumbRingPinkyTap` (96) — and nothing raises the bar for those in clutch-off
+mode. The clutch was doing all the work; removing it removes the brake entirely.
+
+Corroborated by the suite's pre-existing informational leg: once armed *by any means*, the same
+typing stream produces ~106 events. Clutch-off ≈ armed. The boost is close to a no-op here.
+
+### Per-seed counts
+
+| Seed | Stream | Events | Gesture breakdown |
+|---|---|---:|---|
+| `0x7e1711161dea1001` | conversation | 5 | thumbIndexTap:2, thumbSwipeForward:1, wristRotateCW:2 |
+| `0x1` | conversation | 6 | fistToOpen:2, indexPoint:2, wristRotateCW:2 |
+| `0xdeadbeefcafef00d` | conversation | 11 | thumbIndexTap:5, thumbMiddleTap:1, thumbSwipeBackward:2, thumbsUp:1, wristRotateCCW:1, wristRotateCW:1 |
+| `0x123456789abcdef0` | conversation | 11 | fistToOpen:1, indexPoint:1, thumbIndexTap:5, thumbSwipeBackward:1, thumbsUp:1, wristRotateCCW:2 |
+| `0xffffffffffffffff` | conversation | 7 | indexPoint:1, thumbIndexTap:3, thumbMiddleTap:1, thumbsUp:1, victory:1 |
+| `0xbadf00d600dc0de` | conversation | 7 | thumbIndexTap:4, thumbMiddleTap:1, thumbsUp:1, wristRotateCW:1 |
+| `0x9e3779b97f4a7c15` | conversation | 8 | indexPoint:1, thumbIndexTap:4, wristRotateCW:3 |
+| `0x5eed5eed5eed5eed` | conversation | 7 | thumbIndexTap:3, thumbsUp:1, victory:1, wristRotateCCW:2 |
+| `0x1111222233334444` | conversation | 7 | indexPoint:2, thumbIndexTap:5 |
+| `0x8888777766665555` | conversation | 8 | thumbIndexTap:3, wristRotateCCW:2, wristRotateCW:3 |
+| `0xa5a5a5a55a5a5a5a` | conversation | 10 | thumbIndexTap:5, thumbsUp:1, victory:1, wristRotateCCW:3 |
+| `0x1` | typing | 100 | indexPoint:1, thumbIndexTap:33, thumbMiddleTap:28, thumbRingPinkyTap:8, thumbSwipeBackward:4, thumbSwipeForward:4, wristRotateCCW:13, wristRotateCW:9 |
+| `0x123456789abcdef0` | typing | 106 | indexPoint:1, thumbIndexTap:41, thumbMiddleTap:26, thumbRingPinkyTap:10, thumbSwipeBackward:4, thumbSwipeForward:1, twoFingerScrollDown:1, twoFingerScrollUp:1, victory:1, wristRotateCCW:9, wristRotateCW:11 |
+| `0x7e1711161dea1001` | typing | 106 | indexPoint:4, thumbIndexTap:38, thumbMiddleTap:31, thumbRingPinkyTap:6, thumbSwipeBackward:5, thumbSwipeForward:2, thumbsUp:1, wristRotateCCW:10, wristRotateCW:9 |
+| `0x5eed5eed5eed5eed` | typing | 101 | indexPoint:1, thumbIndexTap:38, thumbMiddleTap:32, thumbRingPinkyTap:9, thumbSwipeBackward:1, thumbSwipeForward:3, thumbsUp:1, twoFingerScrollDown:1, wristRotateCCW:6, wristRotateCW:9 |
+| `0xdeadbeefcafef00d` | typing | 118 | indexPoint:2, thumbIndexTap:40, thumbMiddleTap:23, thumbRingPinkyTap:14, thumbSwipeBackward:5, thumbSwipeForward:2, thumbsUp:2, twoFingerScrollDown:1, twoFingerScrollUp:1, wristRotateCCW:13, wristRotateCW:15 |
+| `0xffffffffffffffff` | typing | 103 | indexPoint:1, thumbIndexTap:39, thumbMiddleTap:25, thumbRingPinkyTap:9, thumbSwipeBackward:7, thumbSwipeForward:3, thumbsUp:1, twoFingerScrollUp:1, wristRotateCCW:8, wristRotateCW:9 |
+| `0x9e3779b97f4a7c15` | typing | 104 | indexPoint:3, thumbIndexTap:40, thumbMiddleTap:27, thumbRingPinkyTap:7, thumbSwipeBackward:2, thumbSwipeForward:3, wristRotateCCW:15, wristRotateCW:7 |
+| `0xbadf00d600dc0de` | typing | 103 | indexPoint:3, thumbIndexTap:43, thumbMiddleTap:24, thumbRingPinkyTap:9, thumbSwipeBackward:3, thumbSwipeForward:3, wristRotateCCW:6, wristRotateCW:12 |
+| `0x8888777766665555` | typing | 109 | indexPoint:1, palmTiltRight:1, thumbIndexTap:38, thumbMiddleTap:29, thumbRingPinkyTap:7, thumbSwipeBackward:4, thumbSwipeForward:1, twoFingerScrollDown:2, victory:1, wristRotateCCW:14, wristRotateCW:11 |
+| `0xa5a5a5a55a5a5a5a` | typing | 95 | indexPoint:3, thumbIndexTap:32, thumbMiddleTap:27, thumbRingPinkyTap:9, thumbSwipeForward:1, wristRotateCCW:13, wristRotateCW:10 |
+| `0x1111222233334444` | typing | 105 | indexPoint:3, thumbIndexTap:38, thumbMiddleTap:20, thumbRingPinkyTap:8, thumbSwipeBackward:4, thumbSwipeForward:4, thumbsUp:1, twoFingerScrollUp:1, wristRotateCCW:12, wristRotateCW:14 |
+
+### What this does and does not establish
+
+- It **does** establish that the shipped `requiresClutch = false` default has no working
+  false-positive brake against this noise model, seed-independently (22/22).
+- It is **still synthetic.** `Tests/Fixtures/` does not exist, so there is no recorded-hand
+  evidence in either clutch mode. The four recorded legs now report `skipped:` with a reason
+  rather than passing vacuously — a green run can no longer be misread as real-hand evidence.
+- It is a **controlled** comparison despite being synthetic: same streams, same chain, same
+  seeds, only `requiresClutch` differs, and the clutch-on legs stay at zero.
+
+**This is the input to item (f)** (reopen the clutch-off default / add an `openPalm`
+panic-disarm), which remains out of scope for this pass.
+
 ## Decisions
 - **(a) lands red.** Failures are the deliverable. Do **not** raise
   `clutchOffConfidenceBoost`/`debounceFrames` to force green — that fits the synthetic noise
