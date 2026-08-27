@@ -1,6 +1,40 @@
 # Tacit code-review remediation — execution log
-Updated: 2026-08-27 · Branch: main · Status: **all items (a)-(e) done** — Findings 1-5 closed.
-Item (f) remains explicitly out of scope (see "Goal" below).
+Updated: 2026-08-27 · Branch: main · Status: **ALL FIVE ITEMS LANDED**
+
+## ▶ RESUME HERE
+
+**Items (a)–(e) are complete and committed on `main`. Working tree clean.
+`./scripts/test.sh` → 322 tests, 5 suites, exit 0, exactly 22 known issues.**
+
+| item | finding | commit | what landed |
+|---|---|---|---|
+| (b) | 3 | `3cb00f6` | latched chord persisted + replayed on next launch; 4 clear sites (review named 3) |
+| (a) | 1 | `fc6f8b8` | clutch-off measurement; 22 legs, all fire; counts below |
+| (c) | 5 | `9fc5f2c` | keystroke dispatch synchronous on the main actor; exhaustive switch |
+| (d) | 2 | `a2e8244` | `TacitTests` target, injected env + store, 15 tests, all 7 invariants |
+| (e) | 4 | `3e3c495` | `dispatch` async; no `waitUntilExit`, no `main.sync`, AX timeout 0.5s |
+
+Baseline moved 303 → 322 tests. The 22 known issues are item (a)'s deliberate
+clutch-off measurement and are EXPECTED — if that number changes, something
+regressed or the shipped default was silently altered.
+
+## ▶ WHAT NEEDS A DECISION (not code — yours)
+
+1. **Item (f), now urgent.** (a) measured the shipped `requiresClutch = false`
+   default firing ~104 events per 60 s of synthetic typing, 11/11 seeds, including
+   ~3.5 spurious ⌘Z per minute. Reopening the clutch-off default and/or adding an
+   `openPalm` panic-disarm was deferred pending this measurement. The measurement
+   is in. See the (a) RESULT section.
+2. **Hold-release gates on the decider, not on the key.** New finding from (d),
+   not a reachable bug today. See its section below. ~5 lines if wanted.
+3. **Recorded-hand fixtures.** `Tests/Fixtures/` still does not exist, so Tacit has
+   NO real-hand negative evidence in either clutch mode. The four recorded legs now
+   report `skipped:` instead of passing vacuously. Recording is user-gated (⌥ in the
+   popover reveals the recorder) and was out of scope for this pass.
+4. **Hold chords still have no crash recovery.** (b) covers the latch only; a hold's
+   window is seconds vs a latch's unbounded, so the review ranked it lower. The gap is
+   stated in `handleApplicationWillTerminate`'s doc comment rather than left silent.
+
 
 ## Goal
 Close findings 1–5 from [`docs/CODE-REVIEW-2026-08-27.md`](docs/CODE-REVIEW-2026-08-27.md),
