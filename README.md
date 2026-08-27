@@ -48,6 +48,18 @@ Everything else — the four directional hand swipes, wrist rotate CW/CCW, two-f
 
 Change any of this in the Library (the specimen grid in the menu bar popover): pick a gesture, pick an action kind, and for keystrokes pick a delivery mode — press, hold, or toggle.
 
+## Fatigue findings behind the gesture set
+
+Tacit's gesture tiers and defaults come from the evidence review in [`docs/research/LowFatigue-Economic-Hand-Gestures.md`](docs/research/LowFatigue-Economic-Hand-Gestures.md). The strongest finding is not a particular pose: it is **keeping the forearm supported on the desk**. That removes most of the shoulder load behind “gorilla arm” fatigue. For gestures used dozens of times per hour, the research also favors a neutral wrist, relaxed adjacent fingers, near-zero force, and a quick return to rest.
+
+**Lower-fatigue gestures** are brief thumb–index and thumb–middle taps, thumb swipes along the index finger, a loose point, thumbs-up, a loose fist, and a relaxed open palm. Tacit's short palm tilts follow the same small-motion principle. A pinch should be a light touch and immediate release, never a squeeze. Static poses cost the least motion, but are easier to trigger accidentally; short dynamic microgestures add a more distinctive motion signature without requiring a large arm movement.
+
+**Higher-fatigue gestures** raise the arm, hold an awkward posture, or recruit more joints: palm pushes, waves, and especially the two-hand frame belong in the rare/deliberate tier. Full wrist rotation, a held flat splayed “halt” hand, isolated ring/pinky actions, and sustained or forceful pinches are also poor choices for frequent commands. They trade comfort for deliberate, low-false-positive input and should be reserved for occasional actions. Tacit's three most deliberate gestures — palm push, wave, and two-hand frame — are catalogued honestly but do not have detectors yet.
+
+That trade-off shapes the factory defaults: most enabled commands use low-fatigue workhorses, while whole-hand swipes ship off and the smaller palm tilts handle app switching. The optional fist clutch can reduce accidental static-pose triggers; because it currently ships off, Tacit applies a stricter confidence floor instead.
+
+These are design findings, not clinical claims or a finished Tacit user study. The source report synthesizes mid-air fatigue, hand-posture, microgesture, and webcam-detectability research; Tacit's recorded-fixture accuracy gate and Borg/NASA-TLX fatigue validation are still pending.
+
 ## The clutch (optional)
 
 The clutch is a "hold a loose fist to arm" gesture that used to gate everything else, so a hand resting near the keyboard couldn't misfire a gesture. It's real and still built in, but it's **off by default** right now — an earlier build showed the fist read bouncing between `arming` and `disarmed` for real users, so gestures now fire the instant they're recognized instead.
@@ -79,7 +91,7 @@ First launch walks you through onboarding: camera access, Accessibility access, 
   /usr/bin/log stream --process Tacit --level info --style compact --predicate 'subsystem == "studio.breton.tacit"'
   ```
   (Use the full path — plain `log` is a zsh builtin, not the system logging tool.)
-- Flip "Show gesture debug view" in the popover for a floating panel with the live hand constellation, the current reading and its confidence, clutch state, and the last action fired — useful for tuning your hand/camera setup against what Tacit is actually seeing.
+- Click Tacit's menu bar icon, then flip "Show gesture debug view" to show or hide the small floating panel. It displays the live hand constellation, current reading and confidence, clutch state, and last action fired — useful for tuning your hand/camera setup against what Tacit is actually seeing.
 - Sensitivity (Relaxed / Standard / Eager) lives in the Settings tab if gestures feel too twitchy or too reluctant.
 - "Pause for an hour" in the popover suspends recognition without quitting the app; it flips to "Resume" while paused.
 - If Tacit crashes (or is force-quit) while a hold or toggle keystroke like Fn is down, the key can be left stuck — tap the physical key once (Fn, usually) to release it; a normal quit releases it for you.
