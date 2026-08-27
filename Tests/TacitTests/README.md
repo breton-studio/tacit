@@ -80,9 +80,19 @@ replays the exact same branching `TacitEngine.swift` documents at `handleFire`'s
 | `.toggleKeystroke`, gesture IS in `TacitEngine.holdableGestures` (`.indexPoint`/`.thumbsUp`/`.victory`) | no-op here — a holdable gesture's toggle fires from the (still-`private`) hold path instead, never from `handleFire` | see "What's still private" |
 | `.toggleKeystroke`, gesture NOT holdable | routes to `handleToggleFire`, which engages/releases/swaps the latch and posts `postKeyDown`/`postKeyUp` **synchronously** | `keyLog` gets `.down`/`.up` entries in call order |
 | `.holdKeystroke`, gesture IS holdable | no-op here — same reasoning as the toggle row above | see "What's still private" |
-| `.holdKeystroke`, gesture NOT holdable (a momentary gesture bound to a hold action with no hold behind it) | falls through to `ActionDispatcher.dispatch`'s full-press fallback: `postKeyDown` then `postKeyUp`, synchronously | `keyLog` gets `.down` then `.up` |
-| `.keystroke` | `ActionDispatcher.dispatch` calls `postKeystroke` once, synchronously | `keyLog` gets one `.press` entry |
-| `.launchApp` / `.openURL` / `.runShortcut` / `.focusTextInput` / `.switchApp` | dispatched from a `Task.detached` — **not synchronous with the `handleFire` call returning** | `nonKeyboardLog` gets the entry, but only after the detached task runs — see "Awaiting the detached branch" below |
+| `.holdKeystroke`, gesture NOT holdable (a momentary gesture bound to a hold action with no hold behind it) | falls through to `dispatchKeystrokeShapedActionSynchronously(_:)`'s full-press fallback: `postKeyDown` then `postKeyUp`, synchronously | `keyLog` gets `.down` then `.up` |
+| `.keystroke` | `dispatchKeystrokeShapedActionSynchronously(_:)` calls `postKeystroke` once, synchronously | `keyLog` gets one `.press` entry |
+| `.launchApp` / `.openURL` / `.runShortcut` / `.focusTextInput` / `.switchApp` | dispatched from a `Task.detached`, which `await`s `ActionDispatcher.dispatch(_:)` — **not synchronous with the `handleFire` call returning** | `nonKeyboardLog` gets the entry, but only after the detached task runs — see "Awaiting the detached branch" below |
+
+As of item (e) (Finding 4, landed), the `.keystroke`/`.holdKeystroke`-fallback row above no longer
+calls `ActionDispatcher.dispatch(_:)` at all — `dispatch(_:)` is `async` now (so the last row's
+five actions can leave the cooperative thread pool), and `handleFire(_:)` cannot `await` it without
+reintroducing Finding 5's ordering bug. `TacitEngine.dispatchKeystrokeShapedActionSynchronously(_:)`
+is the synchronous substitute: same Accessibility gate, same failure messages, called directly
+against `actionEnvironment` instead of through `ActionDispatcher`. Nothing about this is visible
+from a test's perspective — `handleFire(_:)`'s own signature and behavior are unchanged — but if
+you're reading `TacitEngine.swift` to understand the mechanism, that's the method to look at, not
+`ActionDispatcher.dispatch(_:)`.
 
 Every one of `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` (the middle three rows above) is
 fully synchronous: by the time `engine.handleFire(_:)` returns, `spy.keyLog` already has every
@@ -238,22 +248,30 @@ chokepoint, not the screen-lock notification itself, is what's actually testable
 `endActiveHoldIfNeeded()` too if you need it, and consider testing the screen-lock invariant
 functionally (call the chokepoint directly) rather than literally (post the real notification).
 
-## What item (e) will change under you
+## What item (e) changed (landed 2026-08-27)
 
-Item (e) (Finding 4, sequenced last per `EXECUTION-LOG.md`) makes `ActionDispatcher.dispatch(_:)`
-`async` and three `ActionEnvironment` closures (`runShortcut`, `focusTextInput`, `switchApp`)
-`async`. `postKeystroke`/`postKeyDown`/`postKeyUp` stay synchronous (that's the whole point of
-Finding 5 / item (c) — ordering depends on them staying synchronous). When that lands:
+Item (e) (Finding 4) made `ActionDispatcher.dispatch(_:)` `async` and three `ActionEnvironment`
+closures (`runShortcut`, `focusTextInput`, `switchApp`) `async`, so `LiveActionEnvironment` could
+get `.runShortcut`/`.focusTextInput`/`.switchApp` off the Swift cooperative thread pool (unbounded
+`Process.waitUntilExit()`, no AX messaging timeout, and `DispatchQueue.main.sync`, respectively —
+see `docs/CODE-REVIEW-2026-08-27.md`'s Finding 4). `postKeystroke`/`postKeyDown`/`postKeyUp` stayed
+synchronous (that's the whole point of Finding 5 / item (c) — ordering depends on them staying
+synchronous). What actually changed, for anyone writing a test against this harness now:
 
 - `ActionEnvironmentSpy.makeEnvironment()`'s `runShortcut`/`focusTextInput`/`switchApp` closures
-  will need to become `async` (drop the immediate `return`, `await` nothing extra — they still
-  just record-and-return).
+  are `async` now (the immediate `return`s stayed — nothing in the spy needed an actual `await`;
+  see that file's own doc comment on the three closures).
 - `TacitEngine.handleFire`'s `.launchApp`/`.openURL`/`.runShortcut`/`.focusTextInput`/`.switchApp`
-  branch calls `actionDispatcher.dispatch(action)` from inside `Task.detached`; that call becomes
-  `await actionDispatcher.dispatch(action)`. Nothing about how a TEST calls `handleFire(_:)`
-  changes — `handleFire` itself is not `async` — but the "Awaiting the detached branch" polling
-  advice above becomes even more clearly the pattern to use for those five actions specifically,
-  since now there are two async hops (`Task.detached` + the `await dispatch`) instead of one.
+  branch calls `await actionDispatcher.dispatch(action)` from inside `Task.detached` now. The
+  "Awaiting the detached branch" polling advice above is unchanged in shape, just with one more
+  async hop underneath it (`Task.detached` + the `await dispatch`) than before.
+- The `.keystroke`/`.holdKeystroke`-fallback branch does **not** call `dispatch(_:)` anymore at
+  all — `await`ing an `async` `dispatch(_:)` from `handleFire(_:)` would have reintroduced Finding
+  5's ordering bug (an `await` is a suspension point the main actor can schedule other work
+  across). Instead `handleFire(_:)` calls a new synchronous method,
+  `TacitEngine.dispatchKeystrokeShapedActionSynchronously(_:)`, which talks to `actionEnvironment`
+  directly — the same pattern `handleHoldBegan(_:)`/`handleToggleFire(_:_:)` already used. See the
+  dispatch table above and that method's own doc comment in `TacitEngine.swift`.
 - `postKeystroke`/`postKeyDown`/`postKeyUp` and everything this README says about them —
-  synchronous, no polling needed — is UNCHANGED by item (e). If your invariant test only touches
-  those three, item (e) landing should not require touching your test at all.
+  synchronous, no polling needed — were UNCHANGED by item (e). No existing invariant test in this
+  target needed to change to accommodate the landing.

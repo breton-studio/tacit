@@ -16,17 +16,25 @@ public struct ActionEnvironment: Sendable {
     public var postKeyUp: @Sendable (KeyChord) -> Bool
     public var launchApp: @Sendable (String) -> Bool
     public var openURL: @Sendable (String) -> Bool
-    public var runShortcut: @Sendable (String) -> Bool
+    /// Code review 2026-08-27, Finding 4 / item (e): `async` so the real implementation
+    /// (`LiveActionEnvironment.runShortcut`) can await `Process` termination via a continuation +
+    /// timeout instead of blocking the calling thread on `waitUntilExit()`. See that file's doc
+    /// comment for the timeout mechanism.
+    public var runShortcut: @Sendable (String) async -> Bool
     /// M3 Task 10: finds and focuses the frontmost window's main text input via the Accessibility
     /// API; returns `false` if no suitable text element could be found/focused (the AX search
     /// itself lives in `LiveActionEnvironment` — see its doc comment for the search order/limits).
-    public var focusTextInput: @Sendable () -> Bool
+    /// Code review 2026-08-27, Finding 4 / item (e): `async` alongside `runShortcut`/`switchApp` —
+    /// see `ActionDispatcher.dispatch(_:)`'s doc comment for why all three had to move together.
+    public var focusTextInput: @Sendable () async -> Bool
     /// 2026-08-24 product ruling: activates the next/previous app in the frozen MRU flip ring
     /// DIRECTLY (`NSRunningApplication.activate`) — never posts ⌘Tab, never shows the switcher.
     /// Returns `false` if there was nothing to activate (e.g. an empty snapshot). The ring itself
     /// (`AppSwitchRing`) and its `NSWorkspace` owner (`AppSwitcher`) live in the app target — see
-    /// `LiveActionEnvironment.make()`.
-    public var switchApp: @Sendable (AppSwitchDirection) -> Bool
+    /// `LiveActionEnvironment.make()`. Code review 2026-08-27, Finding 4 / item (e): `async` so
+    /// the real implementation can `await MainActor.run { ... }` instead of blocking the calling
+    /// thread on `DispatchQueue.main.sync`.
+    public var switchApp: @Sendable (AppSwitchDirection) async -> Bool
     public var isAccessibilityTrusted: @Sendable () -> Bool
 
     public init(
@@ -35,9 +43,9 @@ public struct ActionEnvironment: Sendable {
         postKeyUp: @Sendable @escaping (KeyChord) -> Bool,
         launchApp: @Sendable @escaping (String) -> Bool,
         openURL: @Sendable @escaping (String) -> Bool,
-        runShortcut: @Sendable @escaping (String) -> Bool,
-        focusTextInput: @Sendable @escaping () -> Bool,
-        switchApp: @Sendable @escaping (AppSwitchDirection) -> Bool,
+        runShortcut: @Sendable @escaping (String) async -> Bool,
+        focusTextInput: @Sendable @escaping () async -> Bool,
+        switchApp: @Sendable @escaping (AppSwitchDirection) async -> Bool,
         isAccessibilityTrusted: @Sendable @escaping () -> Bool
     ) {
         self.postKeystroke = postKeystroke
@@ -70,7 +78,21 @@ public struct ActionDispatcher: Sendable {
         self.environment = environment
     }
 
-    public func dispatch(_ action: TacitAction) -> DispatchOutcome {
+    /// Code review 2026-08-27, Finding 4 / item (e): `async` so `.runShortcut`/`.focusTextInput`/
+    /// `.switchApp` — the three blocking calls Finding 4 identified — can leave the Swift
+    /// cooperative thread pool instead of starving it (`Process.waitUntilExit()`, up to 400
+    /// synchronous cross-process AX calls with no messaging timeout, and `DispatchQueue.main.sync`,
+    /// respectively; see `LiveActionEnvironment.swift` for each fix). `.keystroke`/`.holdKeystroke`/
+    /// `.toggleKeystroke` still go through this same switch below (and `ActionDispatcherTests`
+    /// still exercises them directly, synchronously awaited), but `TacitEngine.handleFire(_:)`'s
+    /// production call site no longer routes those three cases through this method at all —
+    /// `await`ing this `async` function is a suspension point, and yielding the main actor there
+    /// would reintroduce Finding 5 / item (c)'s keystroke-ordering bug. See
+    /// `TacitEngine.dispatchKeystrokeShapedActionSynchronously(_:)`'s doc comment for the
+    /// synchronous substitute `handleFire(_:)` calls instead, which duplicates this method's
+    /// `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` logic deliberately rather than delegating to
+    /// it.
+    public func dispatch(_ action: TacitAction) async -> DispatchOutcome {
         // M3 Task 10: the Accessibility gate is derived from `action.requiresAccessibility`
         // GENERICALLY, once, up front — rather than each case re-implementing its own
         // `guard environment.isAccessibilityTrusted() else { return .needsAccessibility }`. This
@@ -135,19 +157,19 @@ public struct ActionDispatcher: Sendable {
             return .performed
 
         case .runShortcut(let name):
-            guard environment.runShortcut(name) else {
+            guard await environment.runShortcut(name) else {
                 return .failed("Couldn't run Shortcut '\(name)'")
             }
             return .performed
 
         case .focusTextInput:
-            guard environment.focusTextInput() else {
+            guard await environment.focusTextInput() else {
                 return .failed("Couldn't find a text field.")
             }
             return .performed
 
         case .switchApp(let direction):
-            guard environment.switchApp(direction) else {
+            guard await environment.switchApp(direction) else {
                 return .failed("Couldn't switch app")
             }
             return .performed

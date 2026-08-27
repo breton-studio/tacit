@@ -4,6 +4,31 @@ import ServiceManagement
 import TacitCore
 import OSLog
 
+/// A lock-guarded "resolve exactly once" latch. `runShortcut`'s continuation below has two
+/// independent races to settle it — `Process.terminationHandler` (which macOS calls on an
+/// arbitrary queue) and a timeout `Task` — and `CheckedContinuation.resume` traps if called twice.
+/// `@unchecked Sendable` on the same basis `ActionEnvironmentSpy`'s `NSLock`-guarded state uses:
+/// every access goes through the lock, so no data race is actually possible even though the
+/// compiler can't see that from the type alone.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var settled = false
+    private let resume: (Bool) -> Void
+
+    init(resume: @escaping (Bool) -> Void) {
+        self.resume = resume
+    }
+
+    func callAsFunction(_ result: Bool) {
+        lock.lock()
+        let alreadySettled = settled
+        settled = true
+        lock.unlock()
+        guard !alreadySettled else { return }
+        resume(result)
+    }
+}
+
 /// The real macOS implementation of `ActionEnvironment` — posts synthetic key events, launches
 /// apps, opens URLs, and runs Shortcuts. Kept deliberately dumb (no logic beyond translating one
 /// closure call into the matching system call); the branching/decision logic lives in
@@ -95,38 +120,67 @@ enum LiveActionEnvironment {
                 guard let url = URL(string: string) else { return false }
                 return NSWorkspace.shared.open(url)
             },
-            // NOTE: `waitUntilExit()` blocks the calling thread until `shortcuts run` completes.
-            // This is fine for `ActionDispatcher.dispatch`, which callers (Task 21's TacitEngine
-            // wiring) must invoke off the main thread/actor — never call `dispatch` synchronously
-            // from a main-thread context, or a slow Shortcut will hang the UI.
+            // Code review 2026-08-27, Finding 4 / item (e): `waitUntilExit()` used to block the
+            // calling thread — unbounded, no `terminate()` escape hatch — which is exactly the
+            // hazard that starved the Swift cooperative thread pool `PipelineCore`'s actor executor
+            // needs to be scheduled (Finding 4). Replaced with `Process.terminationHandler` +
+            // `withCheckedContinuation`, plus a 10s timeout (defensible for a Shortcut — most run
+            // in well under a second) that force-`terminate()`s the process and resolves `false`
+            // rather than hanging forever. `ResumeOnce` below exists purely because
+            // `terminationHandler` (an arbitrary queue) and the timeout `Task` (this closure's own
+            // async context) race to be the one that settles the continuation, and
+            // `withCheckedContinuation` traps if `resume` is ever called twice.
             runShortcut: { name in
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-                p.arguments = ["run", name]
-                do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+                await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+                    process.arguments = ["run", name]
+
+                    let settle = ResumeOnce { result in continuation.resume(returning: result) }
+
+                    process.terminationHandler = { proc in
+                        settle(proc.terminationStatus == 0)
+                    }
+
+                    do {
+                        try process.run()
+                    } catch {
+                        settle(false)
+                        return
+                    }
+
+                    Task {
+                        try? await Task.sleep(for: .seconds(10))
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                        settle(false)
+                    }
+                }
             },
             // M3 Task 10: BLOCKS BRIEFLY — every `AXUIElementCopyAttributeValue` call below is a
-            // synchronous round-trip into another process (potentially a hung or slow one), so
-            // this must only ever run off the main thread/actor. Its sole caller,
-            // `ActionDispatcher.dispatch(_:)`, is itself only ever invoked from `TacitEngine`'s
-            // `Task.detached` in `handleFire(_:)` — see that call site's doc comment — never
-            // synchronously from the main actor.
+            // synchronous round-trip into another process (potentially a hung or slow one).
+            // Code review 2026-08-27, Finding 4 / item (e): this closure is `async` so its sole
+            // production caller — `ActionDispatcher.dispatch(_:)`'s `.focusTextInput` case, itself
+            // only ever invoked from `TacitEngine.handleFire(_:)`'s `Task.detached` branch — can
+            // `await` it off the main actor without blocking anything else on the cooperative
+            // thread pool while the walk runs. `focusFrontmostTextInput()` itself stays a plain
+            // synchronous function (no `await` inside it); the timeout risk it carries is now
+            // bounded by `AXUIElementSetMessagingTimeout` instead, set once per call before the
+            // walk — see that function's doc comment.
             focusTextInput: { AXTextInputFocuser.focusFrontmostTextInput() },
-            // 2026-08-24 product ruling: `ActionDispatcher.dispatch` is only ever invoked from
-            // `TacitEngine.handleFire`'s `Task.detached` — i.e. NEVER on the main actor/thread
-            // (see that call site's doc comment) — while `AppSwitcher.shared` is `@MainActor`.
-            // `DispatchQueue.main.sync` is the synchronous hop this closure needs: it blocks the
-            // detached task's own thread (never the main thread, since the caller is guaranteed
-            // off-main) until the main-actor `flip(_:)` call completes and hands back its `Bool`,
-            // which a fire-and-forget `Task { @MainActor in ... }` couldn't do — `dispatch(_:)`'s
-            // signature is synchronous, not `async`. `MainActor.assumeIsolated` inside the block is
-            // then safe/required: `DispatchQueue.main.sync`'s block genuinely runs ON the main
-            // thread, which is what backs the main actor's executor.
+            // 2026-08-24 product ruling: activates the next/previous app in the frozen MRU flip
+            // ring. Code review 2026-08-27, Finding 4 / item (e): `AppSwitcher.shared` is
+            // `@MainActor`; now that this closure is itself `async` (its sole production caller,
+            // `ActionDispatcher.dispatch(_:)`'s `.switchApp` case, is only ever invoked from
+            // `TacitEngine.handleFire(_:)`'s `Task.detached` branch), a plain `await MainActor.run`
+            // is the correct hop — no need for `DispatchQueue.main.sync` + `MainActor
+            // .assumeIsolated`'s synchronous blocking workaround, which existed only because
+            // `dispatch(_:)` used to be synchronous and had no other way to hand back `flip(_:)`'s
+            // `Bool` across the actor boundary.
             switchApp: { direction in
-                DispatchQueue.main.sync {
-                    MainActor.assumeIsolated {
-                        AppSwitcher.shared.flip(direction)
-                    }
+                await MainActor.run {
+                    AppSwitcher.shared.flip(direction)
                 }
             },
             isAccessibilityTrusted: { AXIsProcessTrusted() }
@@ -159,9 +213,21 @@ enum AXTextInputFocuser {
     ///    a field as a side effect); the overall call succeeds iff `kAXPressAction` succeeds.
     /// Returns `false` if any REQUIRED step fails: no frontmost app, no window, no matching
     /// element found by the walk, or both the direct-focus and click-fallback focus attempts fail.
+    ///
+    /// Code review 2026-08-27, Finding 4 / item (e): `AXUIElementSetMessagingTimeout(appElement,
+    /// 0.5)` runs FIRST, before step 2's window lookup even starts — the AX default (6s PER CALL)
+    /// is what let a single hung/slow app turn this walk's 400-node cap into minutes, not seconds.
+    /// 0.5s applies to every `AXUIElementCopyAttributeValue`/`AXUIElementSetAttributeValue`/
+    /// `AXUIElementPerformAction` call made through `appElement` or any element descended from it
+    /// (the timeout is inherited by child elements from the same application connection), so it
+    /// covers steps 2-5 below, not just the walk. Best-effort: the call's own `AXError` result is
+    /// ignored (matching this file's other best-effort AX calls, e.g. `kAXRaiseAction` in `focus`
+    /// below) — a failure to SET the timeout is not a reason to abandon the search, it just means
+    /// the 400-node/depth-8 caps are now the only bound in play, same as before this change.
     static func focusFrontmostTextInput() -> Bool {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
         let appElement = AXUIElementCreateApplication(pid)
+        _ = AXUIElementSetMessagingTimeout(appElement, 0.5)
 
         guard let window = focusedOrFirstWindow(of: appElement) else { return false }
         guard let target = firstMatchingTextElement(startingAt: window) else { return false }

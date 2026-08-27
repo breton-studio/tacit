@@ -13,12 +13,14 @@ import TacitCore
 ///
 /// That assumption does NOT hold for `TacitEngine`. As of item (c) (2026-08-27),
 /// `handleFire(_:)` dispatches `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` SYNCHRONOUSLY on
-/// the main actor, but `.launchApp`/`.openURL`/`.runShortcut`/`.focusTextInput`/`.switchApp`
-/// still go through `Task.detached` and can call this environment's closures from an arbitrary
-/// background thread (item (e), Finding 4, hasn't landed yet — see this file's bottom doc comment
-/// for what changes when it does). So this spy can legitimately be called from more than one
-/// thread, including concurrently with a main-actor caller. Every read and write below goes
-/// through a single `NSLock` rather than relying on "tests are single-threaded."
+/// the main actor (bypassing `ActionDispatcher.dispatch(_:)` entirely as of item (e) — see
+/// `TacitEngine.dispatchKeystrokeShapedActionSynchronously(_:)`), but `.launchApp`/`.openURL`/
+/// `.runShortcut`/`.focusTextInput`/`.switchApp` still go through `Task.detached` — and, as of
+/// item (e) (Finding 4), `await actionDispatcher.dispatch(action)` inside it, so these three
+/// closures below are now `async` too — and can call this environment's closures from an
+/// arbitrary background thread. So this spy can legitimately be called from more than one thread,
+/// including concurrently with a main-actor caller. Every read and write below goes through a
+/// single `NSLock` rather than relying on "tests are single-threaded."
 ///
 /// ## API surface (verbatim — the three agents writing the seven invariant tests use this)
 ///
@@ -204,6 +206,12 @@ public final class ActionEnvironmentSpy: @unchecked Sendable {
                     return _openURLResult
                 }
             },
+            // Code review 2026-08-27, Finding 4 / item (e): `runShortcut`/`focusTextInput`/
+            // `switchApp` are `async` on `ActionEnvironment` now (see that type's doc comments).
+            // Nothing here actually needs to `await` anything — the spy still just records into
+            // the lock-guarded log and returns the matching `*Result` flag synchronously — so
+            // these three closures are async purely to satisfy the type; see
+            // `Tests/TacitTests/README.md`'s final section for why no test needed to change.
             runShortcut: { [self] name in
                 lock.withLock {
                     _nonKeyboardLog.append(.runShortcut(name))

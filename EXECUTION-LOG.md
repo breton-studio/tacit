@@ -1,5 +1,6 @@
 # Tacit code-review remediation — execution log
-Updated: 2026-08-27 · Branch: main · Status: in progress ((b), (a), (c) done; (d), (e) remain)
+Updated: 2026-08-27 · Branch: main · Status: **all items (a)-(e) done** — Findings 1-5 closed.
+Item (f) remains explicitly out of scope (see "Goal" below).
 
 ## Goal
 Close findings 1–5 from [`docs/CODE-REVIEW-2026-08-27.md`](docs/CODE-REVIEW-2026-08-27.md),
@@ -17,27 +18,89 @@ this pass. Finding 1's measurement feeds that decision later; it does not replac
   file:line references; this log only tracks state.
 - **(b) Persist the latched chord** — landed at `3cb00f6`.
 - **(a) Clutch-off negative suite** — measured at `3cb00f6`. See "(a) RESULT" below.
-- **(c) Move `.keystroke` dispatch to the main actor** — landed (working tree, not yet committed).
-  `handleFire` (`TacitEngine.swift`, split point ~:1452) now switches on `action` kind:
-  `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` call `actionDispatcher.dispatch(action)`
-  synchronously on the main actor and call `applyDispatchOutcome` directly; `.launchApp`/
-  `.openURL`/`.runShortcut`/`.focusTextInput`/`.switchApp` stay on `Task.detached` exactly as
-  before, hopping back via `MainActor.run`. Updated the two doc comments that asserted "never on
-  the main actor" (the `actionDispatcher` property comment and `handleFire`'s dispatch-site
-  comment) to state the real invariant: ordering forces the keystroke branch onto the main actor,
-  blocking is what keeps the other five detached. `./scripts/test.sh` still 307 tests / 3 suites /
-  exit 0 / 22 known issues (unchanged) — see review §Finding 5.
+- **(c) Move `.keystroke` dispatch to the main actor** — landed at `9fc5f2c`. `handleFire`
+  (`TacitEngine.swift`) became an exhaustive switch on `action` kind with no `default`:
+  `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` dispatch synchronously on the main actor and
+  call `applyDispatchOutcome` directly; `.launchApp`/`.openURL`/`.runShortcut`/`.focusTextInput`/
+  `.switchApp` stay on `Task.detached`, hopping back via `MainActor.run`. Updated the doc comments
+  that asserted "never on the main actor" to state the real invariant: ordering forces the
+  keystroke branch onto the main actor, blocking is what keeps the other five detached — see
+  review §Finding 5.
+- **(d) `TacitTests` target** — landed at `a2e8244`. Added `.testTarget(name: "TacitTests", ...)`
+  to `Package.swift`; injected `ActionEnvironment`/`MappingStore` through `TacitEngine.init`
+  (defaulting to the live ones — production unchanged); added `ActionEnvironmentSpy`
+  (`Tests/TacitTests/ActionEnvironmentSpy.swift`, `NSLock`-guarded, thread-safe) and
+  `TacitTestSupport.isolatedMappingStore()`. Fifteen tests across `SmokeTests.swift`,
+  `ChokepointTests.swift`, `KeyPairingTests.swift`, and `LifecycleTests.swift` cover all seven
+  invariants the review listed, plus regressions for (b) and (c). Widened `handleFire(_:)`,
+  `handleHoldEvent(_:)`, `handleCaptureStateChange(_:)`, `handleApplicationWillTerminate()`, and
+  `holdTracker` from `private` to internal (default access) so `@testable import Tacit` can drive
+  them directly — pure visibility changes, no behavior change, shipped call sites unaffected. See
+  `Tests/TacitTests/README.md` for the harness contract. `./scripts/test.sh`: 307 tests / 3 suites
+  before this landed → the new target added the difference.
+- **(e) Unblock the cooperative pool** — landed 2026-08-27 (this session), working tree only —
+  see "▶ RESUME HERE" for commit status. `ActionDispatcher.dispatch(_:)` is now `async`, along with
+  the `runShortcut`/`focusTextInput`/`switchApp` closures on `ActionEnvironment`.
+  `postKeystroke`/`postKeyDown`/`postKeyUp` untouched (still synchronous — (c)'s ordering guarantee
+  depends on this).
+  - `LiveActionEnvironment.runShortcut`: replaced `Process.waitUntilExit()` with
+    `terminationHandler` + `withCheckedContinuation`, guarded by a small lock-based `ResumeOnce`
+    latch (needed because the termination handler and a timeout `Task` race to resolve the same
+    continuation). 10s timeout calls `terminate()` and resolves `false`. Verified standalone
+    against `/bin/sleep` (fast-success, slow-timeout-with-terminate, nonzero-exit cases) before
+    trusting it in the real closure — this path has no test coverage in `swift test` itself, since
+    every existing test uses a spy environment, never `LiveActionEnvironment` directly.
+  - `LiveActionEnvironment.focusFrontmostTextInput()`: calls
+    `AXUIElementSetMessagingTimeout(appElement, 0.5)` right after creating `appElement`, before
+    the window lookup / BFS walk — bounds the AX default (6s **per call**) that the existing
+    400-node/depth-8 caps assumed was already bounded and wasn't.
+  - `LiveActionEnvironment.switchApp`: `DispatchQueue.main.sync` + `MainActor.assumeIsolated` →
+    plain `await MainActor.run { AppSwitcher.shared.flip(direction) }`. Deleted the rationale block
+    that justified the old synchronous-hop workaround.
+  - `TacitEngine.handleFire`'s `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` branch does **not**
+    call `actionDispatcher.dispatch(_:)` anymore — `await`ing the now-`async` method would
+    reintroduce (c)'s ordering bug (an `await` is a suspension point the main actor can schedule
+    other work across). Added `TacitEngine.dispatchKeystrokeShapedActionSynchronously(_:)`, a new
+    private method that talks to `actionEnvironment` directly, synchronously — the same bypass
+    pattern `handleHoldBegan(_:)`/`handleToggleFire(_:_:)` already used. It deliberately duplicates
+    `dispatch(_:)`'s `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` logic (same Accessibility
+    gate, same failure messages) rather than delegating to it.
+  - Corrected the `LiveActionEnvironment.swift` doc comments (on `focusTextInput` and `switchApp`)
+    that asserted `dispatch(_:)` is "only ever invoked from `Task.detached` — never on the main
+    actor" — false as of (c), and still worth stating correctly rather than restoring by accident:
+    the current truth is that `dispatch(_:)`'s only production caller is the `Task.detached`
+    branch, because the keystroke branch now bypasses it entirely (see above), not because nothing
+    ever called it synchronously.
+  - Updated `Tests/TacitTests/ActionEnvironmentSpy.swift`'s three closures to `async` (no `await`
+    needed inside — they still just record-and-return) and its top doc comment.
+    `Tests/TacitCoreTests/ActionDispatcherTests.swift`: 26 test functions that call `.dispatch(...)`
+    became `async` with `await` added at each call site — purely mechanical, no assertion weakened
+    or removed. Updated `Tests/TacitTests/README.md`'s dispatch table and final section to describe
+    the landed mechanism instead of the predicted one.
+  - `./scripts/test.sh`: **322 tests, 5 suites, exit 0, 22 known issues** — unchanged from the
+    baseline this session started from.
 
-## In flight
-- Nothing uncommitted beyond (c)'s working-tree change to `Sources/Tacit/TacitEngine.swift`.
+## ▶ RESUME HERE
+All five items (a)-(e) are implemented and `./scripts/test.sh` is green at the exact baseline
+(322/5/0/22). **Nothing has been committed this session** — (e)'s changes are all in the working
+tree:
+- `Sources/TacitCore/ActionDispatcher.swift`
+- `Sources/Tacit/LiveActionEnvironment.swift`
+- `Sources/Tacit/TacitEngine.swift`
+- `Tests/TacitCoreTests/ActionDispatcherTests.swift`
+- `Tests/TacitTests/ActionEnvironmentSpy.swift`
+- `Tests/TacitTests/README.md`
+- this file
+
+Next action: review the diff (`git diff`), then commit — item (e) closes Finding 4, and with it
+the whole `docs/CODE-REVIEW-2026-08-27.md` remediation pass except item (f) (explicitly deferred).
+No further code changes are expected before that commit; this log and `docs/CODE-REVIEW-2026-08-27.md`
+are the two documents to read on resume.
 
 ## Next
-1. **(d) `TacitTests` target** — inject `ActionEnvironment` through `TacitEngine.init`, spy the
-   ordered key log, assert the seven invariants listed in the review. Also gives (b) and (c)
-   their regression tests. See review §Finding 2.
-2. **(e) Unblock the cooperative pool** — `dispatch(_:)` goes `async`; Process timeout, AX
-   messaging timeout, drop `DispatchQueue.main.sync`. Largest, and the only public signature
-   change — do it last. See review §Finding 4.
+Nothing outstanding from this pass. Item (f) — reopening the clutch-off default / an `openPalm`
+panic-disarm, informed by (a)'s measurement above — is a separate, later product decision, not a
+follow-up task of this remediation.
 
 
 ## (a) RESULT — clutch-off false-positive measurement

@@ -83,8 +83,10 @@ import Testing
 // MARK: - ActionDispatcher
 
 /// A spy environment that records which closures were invoked and lets each call succeed or
-/// fail on demand. Dispatch is synchronous and single-threaded within a single test, so the
-/// unchecked Sendable conformance is safe here.
+/// fail on demand. Code review 2026-08-27, Finding 4 / item (e): `dispatch(_:)` is `async` now,
+/// but every call below is still `await`ed sequentially, one at a time, within a single test —
+/// nothing here ever runs two closure calls concurrently against the same `Spy` instance — so the
+/// unchecked Sendable conformance remains safe on the same basis it always was.
 private final class Spy: @unchecked Sendable {
     var postKeystrokeCalls: [KeyChord] = []
     /// Every `postKeyDown`/`postKeyUp` call, in order, tagged by direction — a single merged log
@@ -126,10 +128,10 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     ))
 }
 
-@Test func dispatchKeystrokeCallsPostKeystrokeWhenTrusted() {
+@Test func dispatchKeystrokeCallsPostKeystrokeWhenTrusted() async {
     let spy = Spy()
     let chord = KeyChord(keyCode: 8, modifiers: [.command])
-    let outcome = makeDispatcher(spy).dispatch(.keystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.keystroke(chord))
     #expect(outcome == .performed)
     #expect(spy.postKeystrokeCalls == [chord])
     #expect(spy.launchAppCalls.isEmpty)
@@ -138,26 +140,26 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.focusTextInputCallCount == 0)
 }
 
-@Test func dispatchKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
+@Test func dispatchKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() async {
     let spy = Spy()
     spy.isAccessibilityTrustedResult = false
     let chord = KeyChord(keyCode: 8, modifiers: [.command])
-    let outcome = makeDispatcher(spy).dispatch(.keystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.keystroke(chord))
     #expect(outcome == .needsAccessibility)
     #expect(spy.postKeystrokeCalls.isEmpty)
 }
 
-@Test func dispatchKeystrokeFailsWithSummaryInMessage() {
+@Test func dispatchKeystrokeFailsWithSummaryInMessage() async {
     let spy = Spy()
     spy.postKeystrokeResult = false
     let chord = KeyChord(keyCode: 8, modifiers: [.command])
-    let outcome = makeDispatcher(spy).dispatch(.keystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.keystroke(chord))
     #expect(outcome == .failed("Couldn't press ⌘C"))
 }
 
-@Test func dispatchLaunchAppCallsExactlyLaunchApp() {
+@Test func dispatchLaunchAppCallsExactlyLaunchApp() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"))
+    let outcome = await makeDispatcher(spy).dispatch(.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"))
     #expect(outcome == .performed)
     #expect(spy.launchAppCalls == ["com.mitchellh.ghostty"])
     #expect(spy.postKeystrokeCalls.isEmpty)
@@ -167,16 +169,16 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
-@Test func dispatchLaunchAppFailsWithDisplayNameInMessage() {
+@Test func dispatchLaunchAppFailsWithDisplayNameInMessage() async {
     let spy = Spy()
     spy.launchAppResult = false
-    let outcome = makeDispatcher(spy).dispatch(.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"))
+    let outcome = await makeDispatcher(spy).dispatch(.launchApp(bundleID: "com.mitchellh.ghostty", displayName: "Ghostty"))
     #expect(outcome == .failed("Couldn't open Ghostty"))
 }
 
-@Test func dispatchOpenURLCallsExactlyOpenURL() {
+@Test func dispatchOpenURLCallsExactlyOpenURL() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.openURL("superwhisper://record"))
+    let outcome = await makeDispatcher(spy).dispatch(.openURL("superwhisper://record"))
     #expect(outcome == .performed)
     #expect(spy.openURLCalls == ["superwhisper://record"])
     #expect(spy.postKeystrokeCalls.isEmpty)
@@ -186,16 +188,16 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
-@Test func dispatchOpenURLFailsWithURLInMessage() {
+@Test func dispatchOpenURLFailsWithURLInMessage() async {
     let spy = Spy()
     spy.openURLResult = false
-    let outcome = makeDispatcher(spy).dispatch(.openURL("superwhisper://record"))
+    let outcome = await makeDispatcher(spy).dispatch(.openURL("superwhisper://record"))
     #expect(outcome == .failed("Couldn't open superwhisper://record"))
 }
 
-@Test func dispatchRunShortcutCallsExactlyRunShortcut() {
+@Test func dispatchRunShortcutCallsExactlyRunShortcut() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.runShortcut(name: "Focus"))
+    let outcome = await makeDispatcher(spy).dispatch(.runShortcut(name: "Focus"))
     #expect(outcome == .performed)
     #expect(spy.runShortcutCalls == ["Focus"])
     #expect(spy.postKeystrokeCalls.isEmpty)
@@ -205,10 +207,10 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
-@Test func dispatchRunShortcutFailsWithNameInMessage() {
+@Test func dispatchRunShortcutFailsWithNameInMessage() async {
     let spy = Spy()
     spy.runShortcutResult = false
-    let outcome = makeDispatcher(spy).dispatch(.runShortcut(name: "Focus"))
+    let outcome = await makeDispatcher(spy).dispatch(.runShortcut(name: "Focus"))
     #expect(outcome == .failed("Couldn't run Shortcut 'Focus'"))
 }
 
@@ -217,10 +219,10 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 /// A `.holdKeystroke` dispatched through the NORMAL fire path (i.e. `TacitEngine.handleFire`, for
 /// a momentary gesture with no `HoldTracker` hold behind it — see `ActionDispatcher.dispatch`'s
 /// `.holdKeystroke` case doc comment) must perform a full press: both halves, down and up.
-@Test func dispatchHoldKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() {
+@Test func dispatchHoldKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() async {
     let spy = Spy()
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(outcome == .performed)
     #expect(spy.postKeyDownCalls == [chord])
     #expect(spy.postKeyUpCalls == [chord])
@@ -233,27 +235,27 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 
 /// Ordering matters: the key-down MUST be posted before the key-up (a full press with the halves
 /// reversed is nonsensical and could confuse a listening app).
-@Test func dispatchHoldKeystrokeFullPressPostsDownBeforeUp() {
+@Test func dispatchHoldKeystrokeFullPressPostsDownBeforeUp() async {
     let spy = Spy()
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    _ = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    _ = await makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(spy.keyDirectionCalls.map(\.direction) == ["down", "up"])
 }
 
-@Test func dispatchHoldKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
+@Test func dispatchHoldKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() async {
     let spy = Spy()
     spy.isAccessibilityTrustedResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(outcome == .needsAccessibility)
     #expect(spy.keyDirectionCalls.isEmpty)
 }
 
-@Test func dispatchHoldKeystrokeFailsWhenPostKeyDownFails() {
+@Test func dispatchHoldKeystrokeFailsWhenPostKeyDownFails() async {
     let spy = Spy()
     spy.postKeyDownResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     // M3 Task 11: keyCode 63 now has a cap name ("Fn") in `KeyChord.capNames`, so the failure
     // message reads the key's name rather than its raw hex code.
     #expect(outcome == .failed("Couldn't press Fn"))
@@ -261,11 +263,11 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.postKeyUpCalls.isEmpty)
 }
 
-@Test func dispatchHoldKeystrokeFailsWhenPostKeyUpFails() {
+@Test func dispatchHoldKeystrokeFailsWhenPostKeyUpFails() async {
     let spy = Spy()
     spy.postKeyUpResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.holdKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.holdKeystroke(chord))
     #expect(outcome == .failed("Couldn't press Fn"))
     #expect(spy.postKeyDownCalls == [chord])
 }
@@ -275,10 +277,10 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 /// A `.toggleKeystroke` dispatched through the NORMAL fire path (i.e. a non-engine caller with no
 /// `KeyLatch` behind it) must perform a full press: both halves, down and up. Same fallback shape
 /// as `.holdKeystroke` above.
-@Test func dispatchToggleKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() {
+@Test func dispatchToggleKeystrokeCallsPostKeyDownAndPostKeyUpWhenTrusted() async {
     let spy = Spy()
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
     #expect(outcome == .performed)
     #expect(spy.postKeyDownCalls == [chord])
     #expect(spy.postKeyUpCalls == [chord])
@@ -291,27 +293,27 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 
 /// Ordering matters: the key-down MUST be posted before the key-up (a full press with the halves
 /// reversed is nonsensical and could confuse a listening app).
-@Test func dispatchToggleKeystrokeFullPressPostsDownBeforeUp() {
+@Test func dispatchToggleKeystrokeFullPressPostsDownBeforeUp() async {
     let spy = Spy()
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    _ = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    _ = await makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
     #expect(spy.keyDirectionCalls.map(\.direction) == ["down", "up"])
 }
 
-@Test func dispatchToggleKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() {
+@Test func dispatchToggleKeystrokeReturnsNeedsAccessibilityWithoutPostingWhenUntrusted() async {
     let spy = Spy()
     spy.isAccessibilityTrustedResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
     #expect(outcome == .needsAccessibility)
     #expect(spy.keyDirectionCalls.isEmpty)
 }
 
-@Test func dispatchToggleKeystrokeFailsWhenPostKeyDownFails() {
+@Test func dispatchToggleKeystrokeFailsWhenPostKeyDownFails() async {
     let spy = Spy()
     spy.postKeyDownResult = false
     let chord = KeyChord(keyCode: 63, modifiers: [])
-    let outcome = makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
+    let outcome = await makeDispatcher(spy).dispatch(.toggleKeystroke(chord))
     // keyCode 63 has a cap name ("Fn") in `KeyChord.capNames`, so the failure message reads the
     // key's name rather than its raw hex code.
     #expect(outcome == .failed("Couldn't press Fn"))
@@ -321,9 +323,9 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 
 // MARK: - .focusTextInput (M3 Task 10)
 
-@Test func dispatchFocusTextInputCallsExactlyFocusTextInputWhenTrusted() {
+@Test func dispatchFocusTextInputCallsExactlyFocusTextInputWhenTrusted() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    let outcome = await makeDispatcher(spy).dispatch(.focusTextInput)
     #expect(outcome == .performed)
     #expect(spy.focusTextInputCallCount == 1)
     #expect(spy.postKeystrokeCalls.isEmpty)
@@ -335,26 +337,26 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 
 /// `.focusTextInput.requiresAccessibility == true`, so this must go through the same gate as
 /// `.keystroke`/`.holdKeystroke` — untrusted means the closure is never even called.
-@Test func dispatchFocusTextInputReturnsNeedsAccessibilityWithoutCallingWhenUntrusted() {
+@Test func dispatchFocusTextInputReturnsNeedsAccessibilityWithoutCallingWhenUntrusted() async {
     let spy = Spy()
     spy.isAccessibilityTrustedResult = false
-    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    let outcome = await makeDispatcher(spy).dispatch(.focusTextInput)
     #expect(outcome == .needsAccessibility)
     #expect(spy.focusTextInputCallCount == 0)
 }
 
-@Test func dispatchFocusTextInputFailsWithFixedMessageWhenClosureReturnsFalse() {
+@Test func dispatchFocusTextInputFailsWithFixedMessageWhenClosureReturnsFalse() async {
     let spy = Spy()
     spy.focusTextInputResult = false
-    let outcome = makeDispatcher(spy).dispatch(.focusTextInput)
+    let outcome = await makeDispatcher(spy).dispatch(.focusTextInput)
     #expect(outcome == .failed("Couldn't find a text field."))
 }
 
 // MARK: - .switchApp (2026-08-24 product ruling)
 
-@Test func dispatchSwitchAppNextCallsExactlySwitchAppWithNext() {
+@Test func dispatchSwitchAppNextCallsExactlySwitchAppWithNext() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    let outcome = await makeDispatcher(spy).dispatch(.switchApp(.next))
     #expect(outcome == .performed)
     #expect(spy.switchAppCalls == [.next])
     #expect(spy.postKeystrokeCalls.isEmpty)
@@ -365,24 +367,24 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
 
-@Test func dispatchSwitchAppPreviousCallsExactlySwitchAppWithPrevious() {
+@Test func dispatchSwitchAppPreviousCallsExactlySwitchAppWithPrevious() async {
     let spy = Spy()
-    let outcome = makeDispatcher(spy).dispatch(.switchApp(.previous))
+    let outcome = await makeDispatcher(spy).dispatch(.switchApp(.previous))
     #expect(outcome == .performed)
     #expect(spy.switchAppCalls == [.previous])
 }
 
-@Test func dispatchSwitchAppFailsWithFixedMessageWhenClosureReturnsFalse() {
+@Test func dispatchSwitchAppFailsWithFixedMessageWhenClosureReturnsFalse() async {
     let spy = Spy()
     spy.switchAppResult = false
-    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    let outcome = await makeDispatcher(spy).dispatch(.switchApp(.next))
     #expect(outcome == .failed("Couldn't switch app"))
 }
 
-@Test func dispatchSwitchAppNeverGatedByAccessibility() {
+@Test func dispatchSwitchAppNeverGatedByAccessibility() async {
     let spy = Spy()
     spy.isAccessibilityTrustedResult = false
-    let outcome = makeDispatcher(spy).dispatch(.switchApp(.next))
+    let outcome = await makeDispatcher(spy).dispatch(.switchApp(.next))
     #expect(outcome == .performed)
     #expect(spy.isAccessibilityTrustedCallCount == 0)
 }
@@ -392,7 +394,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
 /// action with `requiresAccessibility == true` is automatically covered without anyone having to
 /// remember to add a matching guard in `dispatch(_:)`. `.focusTextInput` exercises that here: it
 /// gets the gate despite never touching `postKeystroke`/`postKeyDown`/`postKeyUp`.
-@Test func accessibilityGateAppliesToEveryRequiresAccessibilityAction() {
+@Test func accessibilityGateAppliesToEveryRequiresAccessibilityAction() async {
     let requiresAccessibilityActions: [TacitAction] = [
         .keystroke(KeyChord(keyCode: 8, modifiers: [.command])),
         .holdKeystroke(KeyChord(keyCode: 63, modifiers: [])),
@@ -402,7 +404,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
         #expect(action.requiresAccessibility == true)
         let spy = Spy()
         spy.isAccessibilityTrustedResult = false
-        let outcome = makeDispatcher(spy).dispatch(action)
+        let outcome = await makeDispatcher(spy).dispatch(action)
         #expect(outcome == .needsAccessibility)
         #expect(spy.isAccessibilityTrustedCallCount == 1)
     }
@@ -417,7 +419,7 @@ private func makeDispatcher(_ spy: Spy) -> ActionDispatcher {
         #expect(action.requiresAccessibility == false)
         let spy = Spy()
         spy.isAccessibilityTrustedResult = false
-        let outcome = makeDispatcher(spy).dispatch(action)
+        let outcome = await makeDispatcher(spy).dispatch(action)
         #expect(outcome != .needsAccessibility)
         #expect(spy.isAccessibilityTrustedCallCount == 0)
     }
