@@ -174,8 +174,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// `.holdKeystroke` case is only the normal-fire-path fallback — see its doc comment).
     private let actionEnvironment = LiveActionEnvironment.make()
     /// Routes a fired, bound `TacitAction` to its real macOS side effect. Constructed once with
-    /// the live environment — see `handleFire(_:)` for why `dispatch(_:)` itself must never be
-    /// called from the main actor.
+    /// the live environment — see `handleFire(_:)` for the split between actions `dispatch(_:)` is
+    /// called for SYNCHRONOUSLY on the main actor (`.keystroke`/`.holdKeystroke`/`.toggleKeystroke`
+    /// — ordering, not blocking, is what's at stake for these) and actions it's still only ever
+    /// called for from a `Task.detached` (`.launchApp`/`.openURL`/`.runShortcut`/
+    /// `.focusTextInput`/`.switchApp` — blocking is what's at stake for these).
     private let actionDispatcher: ActionDispatcher
     /// The one HUD panel instance for real gesture fires, shown/errored by `handleFire(_:)`.
     /// (`PopoverView`'s ⌥-debug section keeps its own separate, never-wired `HUDController` for
@@ -1446,20 +1449,49 @@ final class TacitEngine: ObservableObject, EngineUIState {
             return
         }
 
-        // `ActionDispatcher.dispatch` must NEVER be called from the main actor: `.keystroke`
-        // synchronously posts a `CGEvent`, `.runShortcut` blocks on `Process.waitUntilExit()`
-        // (see `LiveActionEnvironment.runShortcut`'s doc comment), and `.focusTextInput` walks
-        // another app's Accessibility tree (see `LiveActionEnvironment.focusTextInput`'s doc
-        // comment) — any of these could stall the UI for a perceptible moment. `actionDispatcher`
-        // (a `Sendable` struct of `@Sendable` closures) and `action`/`gesture`/`frame` (all
-        // `Sendable` value types) are captured into a `Task.detached` that runs off any actor;
-        // only the resulting UI update hops back to the main actor via `MainActor.run`.
-        let dispatcher = actionDispatcher
+        // Code review 2026-08-27, Finding 5: dispatch splits by ACTION KIND below because the two
+        // branches guard against two DIFFERENT hazards, not one. The comment this replaced
+        // asserted "never on the main actor" as a single blanket rule for `ActionDispatcher.
+        // dispatch(_:)` — that was the wrong invariant, and finding 5 is exactly the bug that
+        // followed from it (see this method's earlier guards' doc comments, and
+        // `handleHoldBegan(_:)`'s, for the ordering argument this repeats).
+        //
+        // `.keystroke`, plus `.holdKeystroke`/`.toggleKeystroke` reaching `dispatch(_:)`'s
+        // momentary full-press fallback (a holdable/latchable gesture's own hold/toggle lifecycle
+        // already returned above, before this point, so only non-holdable, non-latched gestures'
+        // bindings reach here for these two cases) dispatch SYNCHRONOUSLY, on the main actor —
+        // exactly like `handleHoldBegan(_:)`'s `postKeyDown` and `handleHoldEnded(_:)`'s
+        // `postKeyUp`. The reason is ORDERING, not blocking, same as those two:
+        // `postKeystroke`/`postKeyDown`/`postKeyUp` are all microseconds-scale, non-blocking
+        // `CGEvent(...).post(tap:)` calls (see `handleHoldBegan(_:)`'s doc comment for the full
+        // argument), so there was never a latency reason to detach them — but two gestures with
+        // independent per-gesture cooldowns (e.g. `thumbSwipeBackward`/⌘Z and
+        // `thumbSwipeForward`/⇧⌘Z, both enabled factory defaults — `MappingStore.swift:435-440`)
+        // can fire on consecutive ~66ms frames, and two independent `Task.detached` closures have
+        // NO ordering guarantee relative to each other from Swift's perspective — the target app
+        // could receive redo before undo. MainActor serialization is what makes fire order equal
+        // delivery order, structurally, the same way it already does for a hold's down/up pair.
+        //
+        // `.launchApp`, `.openURL`, `.runShortcut`, `.focusTextInput`, and `.switchApp` stay on
+        // `Task.detached`, off the main actor. For three of these the hazard really is blocking:
+        // `.runShortcut` blocks on `Process.waitUntilExit()` (see
+        // `LiveActionEnvironment.runShortcut`'s doc comment), `.focusTextInput` walks another
+        // app's Accessibility tree (see `LiveActionEnvironment.focusTextInput`'s doc comment), and
+        // `.switchApp` blocks on `DispatchQueue.main.sync` (see `LiveActionEnvironment.switchApp`'s
+        // doc comment) — Finding 4's list. `.launchApp`/`.openURL` aren't independently blocking
+        // today, but nothing about their ordering needs the main-actor guarantee the keystroke
+        // branch above depends on either, so they stay grouped with the rest here; Finding 4's
+        // task (e) is where this detached bucket gets its blocking calls fixed, not rebalanced by
+        // kind. `actionDispatcher` (a `Sendable` struct of `@Sendable` closures) and
+        // `action`/`gesture`/`frame` (all `Sendable` value types) are captured into the
+        // `Task.detached` below that runs off any actor; only the resulting UI update hops back to
+        // the main actor via `MainActor.run`.
         let gesture = event.gesture
         let frame = latestFrame
 
-        Task.detached { [weak self] in
-            let outcome = dispatcher.dispatch(action)
+        switch action {
+        case .keystroke, .holdKeystroke, .toggleKeystroke:
+            let outcome = actionDispatcher.dispatch(action)
             switch outcome {
             case .performed:
                 TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> performed")
@@ -1468,13 +1500,30 @@ final class TacitEngine: ObservableObject, EngineUIState {
             case .failed(let message):
                 TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> failed(\(message, privacy: .public))")
             }
-            await MainActor.run {
-                self?.applyDispatchOutcome(outcome, gesture: gesture, action: action, frame: frame)
+            applyDispatchOutcome(outcome, gesture: gesture, action: action, frame: frame)
+
+        case .launchApp, .openURL, .runShortcut, .focusTextInput, .switchApp:
+            let dispatcher = actionDispatcher
+            Task.detached { [weak self] in
+                let outcome = dispatcher.dispatch(action)
+                switch outcome {
+                case .performed:
+                    TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> performed")
+                case .needsAccessibility:
+                    TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> needsAccessibility")
+                case .failed(let message):
+                    TacitLog.actions.notice("dispatch gesture=\(gesture.rawValue, privacy: .public) -> failed(\(message, privacy: .public))")
+                }
+                await MainActor.run {
+                    self?.applyDispatchOutcome(outcome, gesture: gesture, action: action, frame: frame)
+                }
             }
         }
     }
 
-    /// The main-actor-side half of `handleFire(_:)`, run once `actionDispatcher.dispatch` returns.
+    /// The main-actor-side half of `handleFire(_:)`, run once `actionDispatcher.dispatch` returns
+    /// — directly, for the synchronous keystroke-shaped branch, or via `MainActor.run` from the
+    /// `Task.detached` branch. Either way this method itself always runs on the main actor.
     private func applyDispatchOutcome(
         _ outcome: DispatchOutcome, gesture: GestureID, action: TacitAction, frame: LandmarkFrame?
     ) {

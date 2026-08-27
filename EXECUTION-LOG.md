@@ -1,5 +1,5 @@
 # Tacit code-review remediation — execution log
-Updated: 2026-08-27 · Branch: main · Status: in progress (nothing implemented yet)
+Updated: 2026-08-27 · Branch: main · Status: in progress ((b), (a), (c) done; (d), (e) remain)
 
 ## Goal
 Close findings 1–5 from [`docs/CODE-REVIEW-2026-08-27.md`](docs/CODE-REVIEW-2026-08-27.md),
@@ -15,26 +15,27 @@ this pass. Finding 1's measurement feeds that decision later; it does not replac
 - Full review at `ffe50da`. Findings + per-item task breakdowns written to
   `docs/CODE-REVIEW-2026-08-27.md`. Read that file first — it has the evidence and the
   file:line references; this log only tracks state.
+- **(b) Persist the latched chord** — landed at `3cb00f6`.
+- **(a) Clutch-off negative suite** — measured at `3cb00f6`. See "(a) RESULT" below.
+- **(c) Move `.keystroke` dispatch to the main actor** — landed (working tree, not yet committed).
+  `handleFire` (`TacitEngine.swift`, split point ~:1452) now switches on `action` kind:
+  `.keystroke`/`.holdKeystroke`/`.toggleKeystroke` call `actionDispatcher.dispatch(action)`
+  synchronously on the main actor and call `applyDispatchOutcome` directly; `.launchApp`/
+  `.openURL`/`.runShortcut`/`.focusTextInput`/`.switchApp` stay on `Task.detached` exactly as
+  before, hopping back via `MainActor.run`. Updated the two doc comments that asserted "never on
+  the main actor" (the `actionDispatcher` property comment and `handleFire`'s dispatch-site
+  comment) to state the real invariant: ordering forces the keystroke branch onto the main actor,
+  blocking is what keeps the other five detached. `./scripts/test.sh` still 307 tests / 3 suites /
+  exit 0 / 22 known issues (unchanged) — see review §Finding 5.
 
 ## In flight
-- Nothing. No source changes have been made. Working tree contains only these two new docs.
+- Nothing uncommitted beyond (c)'s working-tree change to `Sources/Tacit/TacitEngine.swift`.
 
 ## Next
-1. **(b) Persist the latched chord** — smallest, highest-value, no signature churn.
-   `tacit.latchedChord` in `UserDefaults`; write on engage, clear on release, replay-and-clear in
-   `TacitEngine.init`. See review §Finding 3.
-2. **(c) Move `.keystroke` posting to the main actor** — split `handleFire`
-   (`TacitEngine.swift:1393`) by action kind. Detach only Shortcut / AX / switchApp.
-   See review §Finding 5.
-3. **(a) Clutch-off negative suite** — parameterise `replayThroughFullChain`
-   (`NegativeSuiteTests.swift:90`) over tuning, add clutch-off legs asserting only
-   `events.isEmpty`. **Expected to fail. Land it red and record the counts here.**
-   Also make the two vacuous recorded-fixture legs stop reporting green.
-   See review §Finding 1.
-4. **(d) `TacitTests` target** — inject `ActionEnvironment` through `TacitEngine.init`, spy the
+1. **(d) `TacitTests` target** — inject `ActionEnvironment` through `TacitEngine.init`, spy the
    ordered key log, assert the seven invariants listed in the review. Also gives (b) and (c)
    their regression tests. See review §Finding 2.
-5. **(e) Unblock the cooperative pool** — `dispatch(_:)` goes `async`; Process timeout, AX
+2. **(e) Unblock the cooperative pool** — `dispatch(_:)` goes `async`; Process timeout, AX
    messaging timeout, drop `DispatchQueue.main.sync`. Largest, and the only public signature
    change — do it last. See review §Finding 4.
 
@@ -124,9 +125,12 @@ panic-disarm), which remains out of scope for this pass.
   a `testTarget` to depend on it before committing to that shape in (d); if it refuses, extract
   the engine into a third library target rather than fighting it.
 - `TacitEngine.swift` is 1,800 lines and majority prose. Many doc comments assert invariants that
-  are **not** tested — treat them as intent, not proof. Two are already wrong: the
-  "never on the main actor" safety argument at `:1381-1388` (finding 4) and the ordering rule at
-  `:1036-1044` that `handleFire` itself breaks (finding 5).
+  are **not** tested — treat them as intent, not proof. Two were already wrong: the
+  "never on the main actor" safety argument at `handleFire`'s dispatch site (finding 4) and the
+  ordering rule around `:1036-1044` that `handleFire` itself broke (finding 5). (c) rewrote the
+  former to state the real invariant (ordering vs. blocking) and made the latter true again —
+  `handleFire` now follows its own stated rule for keystroke-shaped actions. Finding 4's blocking
+  calls (`.runShortcut`/`.focusTextInput`/`.switchApp`) are still unfixed — that's (e), not (c).
 - `ArbitrationEngine` in clutch-off mode is `.armed(.infinity)` from construction
   (`ArbitrationEngine.swift:136`). Any test asserting `!everArmed` is clutch-on-only by
   construction — don't port those assertions across.
