@@ -109,6 +109,34 @@ camera → Vision hand pose (21 landmarks)
 
 `TacitCore` is a pure Foundation library — all the detection, classification, arbitration, and dispatch logic, with no AppKit/SwiftUI/Vision imports, covered by the test suite. `Tacit` is the SwiftUI/AppKit app: it owns the camera capture, the actual Vision requests, the menu bar UI, the Library, onboarding, and the live action environment (the AX calls and `NSWorkspace` calls `TacitCore` can't make on its own since it stays Foundation-only).
 
+### Computer vision stack
+
+Tacit's computer vision pipeline is native and entirely on-device:
+
+1. **AVFoundation** captures the selected camera at a preferred 1280×720 resolution and requests 30 FPS. Late frames are discarded.
+2. Tacit throttles hand-pose inference to about 15 FPS and buffers only the newest frame, so a slow inference cannot build a queue of stale camera frames.
+3. Apple's [`VNDetectHumanHandPoseRequest`](https://developer.apple.com/documentation/vision/vndetecthumanhandposerequest) detects at most one hand and returns 21 normalized 2D joint positions with confidence values. Tacit drops joints below 0.3 confidence and un-mirrors the horizontal coordinate.
+4. Handwritten Swift geometry classifies static poses and measures motion for taps, swipes, palm tilts, wrist rotation, and scrolling. Arbitration then applies confidence thresholds, debounce, cooldown, and the optional clutch before an action can run.
+
+There is no OpenCV, MediaPipe, cloud inference, bundled custom Core ML model, external computer-vision service, or API key. Apple Vision supplies the hand landmarks; Tacit supplies the gesture vocabulary and intent rules.
+
+#### Why Apple Vision instead of MediaPipe?
+
+We evaluated the current native stack against Google's [MediaPipe Hand Landmarker](https://ai.google.dev/edge/api/mediapipe/python/mp/tasks/vision/HandLandmarkerResult) and [Gesture Recognizer](https://ai.google.dev/edge/api/mediapipe/python/mp/tasks/vision/GestureRecognizerOptions):
+
+| Dimension | Apple Vision — current stack | MediaPipe alternative |
+|---|---|---|
+| Hand output | 21 normalized 2D joints, handedness, and per-joint confidence | 21 normalized landmarks, 21 world-coordinate landmarks, and handedness |
+| Gesture layer | Tacit's custom Swift pose and motion rules | Seven canned poses plus an optional custom classifier; Tacit's microgestures would still need custom temporal logic |
+| Video behavior | Tacit owns frame throttling and newest-frame buffering; smoothing and intent gating are app responsibilities | Live-stream mode includes hand tracking and may drop frames to keep latency down; deliberate-intent gating is still an app responsibility |
+| macOS integration | First-party frameworks consume `CVPixelBuffer` directly in the existing pure-SwiftPM app | Adds a third-party runtime and TFLite model assets; Google's straightforward Swift/CocoaPods path targets iOS, so native macOS packaging needs separate validation |
+| Portability | Apple platforms only | Designed for Android, iOS, Web, Python, and lower-level C++ integrations |
+| Control | Every threshold, detector, and arbitration rule belongs to Tacit | Faster canned-pose baseline and custom-classifier support, with more runtime and model machinery |
+
+**Apple Vision is the better fit today** because Tacit is a macOS-only utility: it keeps the build small, native, private, and dependency-free while giving Tacit complete control over low-fatigue microgestures that are not part of MediaPipe's canned set. Its cost is that Tacit must build and tune its own landmark smoothing, temporal tracking, gesture classification, and false-positive protection.
+
+**MediaPipe would be worth benchmarking** if recorded real-hand fixtures show that Vision landmark stability — rather than Tacit's detector or arbitration rules — is the accuracy bottleneck. MediaPipe offers richer coordinates, built-in tracking, portable runtimes, and a useful canned-pose baseline, but it does not automatically solve accidental actions: both stacks produce uncertain landmark observations, and deliberate-intent gating still has to happen above them.
+
 ## Gesture previews & hb-motion
 
 The looping cartoon-glove animations you see in the Library come from `hb-motion`, a separate sibling repo (`~/Developer/hb-motion`) — a standalone Blender pipeline that renders a scripted glove rig per gesture and exports HEVC-with-alpha `.mov` + poster `.png` pairs. Those get copied into `Sources/Tacit/Resources/previews/` (25 gestures × 2 files = 50 assets) as part of the app build. If a preview asset is ever missing, the Library falls back to Tacit's own constellation line-art instead of showing nothing.
