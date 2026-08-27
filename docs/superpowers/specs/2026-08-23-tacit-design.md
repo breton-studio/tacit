@@ -201,7 +201,7 @@ Initial fixtures are recorded by the user during M1 (the debug recorder is there
 
 ## 10. Execution model
 
-- Repo: `~/Developer/tacit` (this repo; GitHub `breton-studio/tacit`, private). Xcode project generated in M1.
+- Repo: `~/Developer/tacit` (this repo; GitHub `breton-studio/tacit`, public). Xcode project generated in M1.
 - After user approval of this spec: invoke **superpowers:writing-plans** → detailed implementation plan → execute via **subagent-driven development** with **Sonnet 5** worker agents.
 - Parallel tracks per milestone where dependencies allow: (a) capture/detection, (b) classifier/arbitration fixture-TDD, (c) actions/mapping, (d) UI, (e) system integration. Fable 5 (session lead) integrates, reviews every merge against this spec's §4 binding rules and the loaded craft skills, and runs milestone gates with the user.
 - Worker agents are instructed to read this spec §4–§5 verbatim before any UI task; motion values come from `TacitMotion.swift` tokens only.

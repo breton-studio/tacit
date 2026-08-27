@@ -22,3 +22,7 @@ playground.xcworkspace
 
 # Local secrets (never commit)
 .secrets/
+
+# Local agent and audit artifacts
+.gstack/
+.superpowers/

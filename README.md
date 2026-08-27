@@ -137,3 +137,11 @@ Holding ⌥ in the menu bar popover reveals a hidden fixture recorder for captur
 - The four directional hand swipes are recognized and bindable but ship disabled — they weren't detecting reliably enough for everyone, so palm tilt took over app-switching duty instead.
 - The glove renders from hb-motion are a work in progress (proportions, some poses read slightly off).
 - No App Store build: this is a direct-download, non-sandboxed app, since keystroke synthesis (`CGEvent`) needs Accessibility and isn't sandbox-friendly. The action layer is deliberately seamed so a future sandboxed variant could drop just that piece.
+
+## Author
+
+Tacit is created by [Hoyd Breton](https://hoydbreton.com/).
+
+## License
+
+Tacit is available under the [MIT License](LICENSE). The Lucide-derived menu bar glyphs retain Lucide's ISC License as described in [Gesture previews & hb-motion](#gesture-previews--hb-motion) and `Sources/Tacit/LucideGlyphs.swift`.

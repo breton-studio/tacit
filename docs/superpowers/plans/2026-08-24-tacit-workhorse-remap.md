@@ -14,7 +14,7 @@
 
 - Swift 6 strict concurrency; `TacitCore` stays Foundation-only (no AppKit/ApplicationServices imports there).
 - Tests: Swift Testing (`@Test`, `#expect`), run with `./scripts/test.sh` (sets `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Baseline: **248 tests green** at `db3aad8`. Every task ends green.
-- Commit per task with the repo's prefix style (`feat:` / `fix:` / `docs:`), and push `main` (repo is `breton-studio/tacit`, private; pushing main after each task is the established convention here).
+- Commit per task with the repo's prefix style (`feat:` / `fix:` / `docs:`), and push `main` (repo is `breton-studio/tacit`, public; pushing main after each task is the established convention here).
 - UI (spec §4): near-monochrome, ONE accent only for armed/active state; system font; motion via `TacitMotion` tokens only (never magic numbers); 44pt minimum hit targets (`.frame(minHeight: 44)`); plain-verb copy ("Release Fn", not "Deactivate latch"); reuse `TacitToggleStyle`, `TacitButtonStyle`, `TacitUtilityRowButtonStyle` — no new styles.
 - Stuck-key impossibility (M3 Task 9 invariant, keep it): every `postKeyDown` is paired with exactly one `postKeyUp` on **every** exit path; key posts happen **synchronously on the main actor** (never `Task.detached`) so down/up ordering is structural.
 - Reserved gestures `looseFist`/`openPalm` stay reserved (enabled, unbindable).
