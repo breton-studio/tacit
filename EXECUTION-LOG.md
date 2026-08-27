@@ -106,6 +106,43 @@ typing stream produces ~106 events. Clutch-off ≈ armed. The boost is close to 
 **This is the input to item (f)** (reopen the clutch-off default / add an `openPalm`
 panic-disarm), which remains out of scope for this pass.
 
+
+## New finding from (d) — hold-release gates on the decider, not on the key
+
+**Not a reachable bug today. Logged for a deliberate decision, deliberately NOT fixed in the
+test-fixing commit.**
+
+Both stuck-key release paths gate on `holdTracker`, not on whether a key is physically down:
+
+```swift
+endActiveHoldIfNeeded()           guard let event = holdTracker.reset() else { return }
+handleApplicationWillTerminate()  guard holdTracker.reset() != nil     else { return }
+```
+
+`activeHoldChord` is the thing that holds a real key down (set in `handleHoldBegan`, cleared in
+`releaseActiveHold`'s `defer`). `holdTracker` is a pure decider. The guard asks *"did we think a
+hold was active?"* when the safety-critical question is *"is a key still down?"*
+
+**Why it is not reachable now:** `apply(_:generation:timestamp:)` is the only caller of
+`holdTracker.ingest`, and it calls `handleHoldEvent(_:)` on the very next line, so the two states
+cannot desync in the shipped app. Confirmed by grep, and independently triangulated by two agents
+from two different test files.
+
+**Why it is still worth deciding:** one refactor that separates those two lines turns this into a
+real stuck key, and `endActiveHoldIfNeeded()`'s own doc comment already calls itself *"the single
+chokepoint every non-pose-based hold-ended path routes through"* — the fifth comment in this file
+found claiming something stronger than the code delivers.
+
+**The fix, if wanted:** let `releaseActiveHold()` be the gate — call `holdTracker.reset()` for its
+side effect, then release whenever `activeHoldChord != nil`. Preserve the existing
+`hudController.endHold()` semantics (today it runs when the tracker had a hold even if no key-down
+was ever posted). ~5 lines across two methods.
+
+**Why it was not done here:** it changes production behaviour on a safety path. The failing tests
+that surfaced it were asserting a stuck key the shipped app cannot produce, so making production
+looser to satisfy an unreachable synthetic state would be fixing the wrong thing — the same
+reasoning item (a) used when it refused to tune thresholds until the noise suite went green.
+
 ## Decisions
 - **(a) lands red.** Failures are the deliverable. Do **not** raise
   `clutchOffConfidenceBoost`/`debounceFrames` to force green — that fits the synthetic noise

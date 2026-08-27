@@ -167,12 +167,31 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// onboarding read/write this exact object (`TacitApp` passes `engine.mappingStore` to both),
     /// and `handleFire(_:)` below reads it on every fired event. No second instance exists
     /// anywhere in the app.
-    let mappingStore = MappingStore()
-    /// The live macOS side-effect environment — kept as its own property (not just wrapped inside
+    ///
+    /// Beyond item (d)'s literal scope, but necessary for the harness it exists to provide:
+    /// injected through `init` below (defaulting to `MappingStore()`, i.e. the real
+    /// `~/Library/Application Support/Tacit/mappings.json` + `UserDefaults.standard`, so
+    /// production is unchanged) the same way `actionEnvironment` is. Without this, EVERY
+    /// `TacitTests` test that needs a specific binding (`handleFire(_:)` reads `mappingStore` on
+    /// every fire) would call `setBinding(_:for:)` on the real, un-isolated store — reading
+    /// whatever the machine running the tests happens to have persisted, and writing test
+    /// bindings into the developer's real `mappings.json` as a side effect. `MappingStore` already
+    /// supports exactly the injection points needed to avoid that (`init(directory:userDefaults:)`
+    /// — see `MappingStore.swift:100`); this just threads them through. See
+    /// `Tests/TacitTests/README.md` for the temp-directory + isolated-suite construction a test
+    /// should use.
+    let mappingStore: MappingStore
+    /// The macOS side-effect environment — kept as its own property (not just wrapped inside
     /// `actionDispatcher`) so M3 Task 9's hold-began/hold-ended paths can call `postKeyDown`/
     /// `postKeyUp` DIRECTLY, bypassing `ActionDispatcher.dispatch(_:)` entirely (that method's
     /// `.holdKeystroke` case is only the normal-fire-path fallback — see its doc comment).
-    private let actionEnvironment = LiveActionEnvironment.make()
+    ///
+    /// Code review 2026-08-27, Finding 2 / item (d): injected through `init` below (defaulting to
+    /// `LiveActionEnvironment.make()`, so production behavior is unchanged) rather than
+    /// hardcoded, so `TacitTests` can supply a spy and observe every keyboard/side-effect call
+    /// this engine makes. Assigned as the FIRST statement in `init` — see `init`'s doc comment for
+    /// why that ordering matters.
+    private let actionEnvironment: ActionEnvironment
     /// Routes a fired, bound `TacitAction` to its real macOS side effect. Constructed once with
     /// the live environment — see `handleFire(_:)` for the split between actions `dispatch(_:)` is
     /// called for SYNCHRONOUSLY on the main actor (`.keystroke`/`.holdKeystroke`/`.toggleKeystroke`
@@ -312,7 +331,18 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// being held, independent of whether it's bound to `.holdKeystroke` — see
     /// `apply(_:generation:timestamp:)`'s doc comment for the full per-frame wiring, and
     /// `HoldTracker`'s own doc comment for why a stuck-down key is impossible by construction.
-    private var holdTracker = HoldTracker(holdableGestures: TacitEngine.holdableGestures)
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose.
+    /// `handleHoldEvent(_:)` alone is NOT a faithful way for a test to begin a hold: it sets
+    /// `activeHoldChord` (a real key-down) without touching this tracker, and every
+    /// hold-RELEASE chokepoint — `endActiveHoldIfNeeded()` and
+    /// `handleApplicationWillTerminate()` — gates on `holdTracker.reset()`, so a test-only
+    /// hold would never release and the test would report a stuck key that the shipped app
+    /// cannot actually produce. `apply(_:generation:timestamp:)` always ingests here and
+    /// calls `handleHoldEvent(_:)` on the same frame, so the two can never desync in
+    /// production. Tests reproduce that pairing directly; see `Tests/TacitTests/README.md`.
+    /// Widening changes no behavior — `apply(_:generation:timestamp:)` remains the only
+    /// shipped mutator.
+    var holdTracker = HoldTracker(holdableGestures: TacitEngine.holdableGestures)
     /// Mirrors `holdTracker`'s own began/ended state — `true` from the frame a `.began` is seen
     /// through the frame its matching `.ended` is seen, regardless of binding. Used ONLY to decide
     /// whether to keep extending the arbitration command window each frame (a hold not bound to
@@ -354,7 +384,27 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     private var cancellables: Set<AnyCancellable> = []
 
-    init(recorder: FixtureRecorder = FixtureRecorder()) {
+    /// Code review 2026-08-27, Finding 2 / item (d): `actionEnvironment` is now an init PARAMETER
+    /// (defaulting to `LiveActionEnvironment.make()`, so production construction —
+    /// `TacitEngine()`, everywhere the app itself calls it — is byte-for-byte unchanged), not a
+    /// stored property with its own default value. That changes what makes the cold-start
+    /// latch-recovery block below safe to run before the rest of `self` exists: it is no longer
+    /// "the property already had a valid default before the body ran" (that stopped being true
+    /// the moment this became a parameter — a parameter has no independent existence to be valid
+    /// ahead of the body). It is now `self.actionEnvironment = actionEnvironment` being the
+    /// FIRST statement in this initializer, full stop — Swift lets a stored property be read
+    /// immediately after its own assignment, even before every other property is set, so the
+    /// recovery block runs safely as long as nothing before it reads any OTHER not-yet-assigned
+    /// property. Keep it that way: if you reorder anything above the recovery block, or read any
+    /// other `self` property from inside it, this stops being true again.
+    init(
+        recorder: FixtureRecorder = FixtureRecorder(),
+        actionEnvironment: ActionEnvironment = LiveActionEnvironment.make(),
+        mappingStore: MappingStore = MappingStore()
+    ) {
+        self.actionEnvironment = actionEnvironment
+        self.mappingStore = mappingStore
+
         // Code review 2026-08-27, Finding 3: cold-start recovery, run before anything else below.
         // If the previous process left a chord latched — crashed or was force-quit while a
         // `.toggleKeystroke` held a key down — replay its key-up now and clear the record.
@@ -362,19 +412,19 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // isn't gated on it, matching the unconditional-release convention every other
         // stuck-key chokepoint already uses (`releaseLatchIfNeeded()`, `handleHoldEnded(_:)`); a
         // `postKeyUp` that fails silently because trust was revoked between launches is harmless
-        // either way. Safe to use `actionEnvironment` here even though `self` isn't fully set up
-        // yet: it's a stored property with its own default value (`LiveActionEnvironment.make()`,
-        // declared above), so — unlike `recorder`/`actionDispatcher` just below, which this very
-        // initializer assigns — it's already valid before this body starts running.
+        // either way. Safe to use `self.actionEnvironment` here even though the rest of `self`
+        // isn't set up yet: see this initializer's own doc comment above — it is the very first
+        // statement in this body, so it's already valid, and nothing below reads any OTHER
+        // not-yet-assigned property.
         if let orphanedData = UserDefaults.standard.data(forKey: Self.latchedChordDefaultsKey),
            let orphaned = try? JSONDecoder().decode(KeyChord.self, from: orphanedData) {
-            _ = actionEnvironment.postKeyUp(orphaned)
+            _ = self.actionEnvironment.postKeyUp(orphaned)
             UserDefaults.standard.removeObject(forKey: Self.latchedChordDefaultsKey)
             TacitLog.actions.notice("cold-start recovery: orphaned latch chord=\(orphaned.display, privacy: .public) released")
         }
 
         self.recorder = recorder
-        self.actionDispatcher = ActionDispatcher(environment: actionEnvironment)
+        self.actionDispatcher = ActionDispatcher(environment: self.actionEnvironment)
         let stored = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool
         self.isEnabled = stored ?? true
         let storedHUDEnabled = UserDefaults.standard.object(forKey: Self.hudEnabledDefaultsKey) as? Bool
@@ -822,7 +872,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
         capture.resume()
     }
 
-    private func handleCaptureStateChange(_ state: CaptureState) {
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose — a
+    /// `TacitTests` entry point. `@testable import Tacit` drives this directly to reach a
+    /// stuck-key chokepoint that the full capture pipeline cannot be made to reach without a
+    /// camera. Widening changes no behavior; the shipped call sites are unchanged.
+    func handleCaptureStateChange(_ state: CaptureState) {
         TacitLog.capture.notice("capture state -> \(String(describing: state), privacy: .public)")
         updateWarning(for: state)
         if !isRunning(state) {
@@ -1038,7 +1092,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
     // MARK: - Hold-gesture lifecycle (M3 Task 9)
 
     /// Routes a `HoldTracker` phase transition to its dispatch/HUD side effects.
-    private func handleHoldEvent(_ event: GestureHoldEvent) {
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose — a
+    /// `TacitTests` entry point. `@testable import Tacit` drives this directly to reach a
+    /// stuck-key chokepoint that the full capture pipeline cannot be made to reach without a
+    /// camera. Widening changes no behavior; the shipped call sites are unchanged.
+    func handleHoldEvent(_ event: GestureHoldEvent) {
         switch event.phase {
         case .began: handleHoldBegan(event)
         case .ended: handleHoldEnded(event)
@@ -1341,7 +1399,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
     ///  - Pose loss itself (the organic, expected end of a hold) does NOT go through this method —
     ///    it's handled directly by `holdTracker.ingest`'s own missing-frame count inside
     ///    `apply(_:generation:timestamp:)`, which calls `handleHoldEvent(_:)`.
-    private func endActiveHoldIfNeeded() {
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose — a
+    /// `TacitTests` entry point. `@testable import Tacit` drives this directly to reach a
+    /// stuck-key chokepoint that the full capture pipeline cannot be made to reach without a
+    /// camera. Widening changes no behavior; the shipped call sites are unchanged.
+    func endActiveHoldIfNeeded() {
         isHoldActive = false
         guard let event = holdTracker.reset() else { return }
         handleHoldEnded(event)
@@ -1361,7 +1423,11 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// whether this notification ever fired. A stuck `.holdKeystroke` hold has no equivalent —
     /// the review marks that lower priority, since a hold's window is seconds where a latch's is
     /// unbounded — so `activeHoldChord` is still only ever in-memory.
-    private func handleApplicationWillTerminate() {
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose — a
+    /// `TacitTests` entry point. `@testable import Tacit` drives this directly to reach a
+    /// stuck-key chokepoint that the full capture pipeline cannot be made to reach without a
+    /// camera. Widening changes no behavior; the shipped call sites are unchanged.
+    func handleApplicationWillTerminate() {
         releaseLatchIfNeeded()
         guard holdTracker.reset() != nil else { return }
         defer { hudController.endHold() }
@@ -1376,7 +1442,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// unbound gestures (`action == nil`), and disabled bindings all no-op here — no dispatch, no
     /// HUD — matching the brief exactly; the glyph's fire pulse above already happened
     /// unconditionally regardless of binding state.
-    private func handleFire(_ event: GestureEvent) {
+    ///
+    /// Code review 2026-08-27, Finding 2 / item (d): internal (not `private`) on purpose — this is
+    /// the `TacitTests` entry point for driving a single gesture fire straight through binding
+    /// lookup → dispatch → HUD, bypassing the full capture → classification → arbitration
+    /// pipeline that would otherwise be the only way to reach it. `@testable import Tacit` can
+    /// call `engine.handleFire(GestureEvent(gesture:timestamp:))` directly; see
+    /// `Tests/TacitTests/README.md` for a worked example. Nothing about making this internal
+    /// changes its behavior — `apply(_:generation:timestamp:)` below is still the only call site
+    /// in the shipped app.
+    func handleFire(_ event: GestureEvent) {
         let binding = mappingStore.binding(for: event.gesture)
         guard binding.enabled, let action = binding.action else {
             TacitLog.engine.notice(
