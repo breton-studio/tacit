@@ -153,7 +153,7 @@ swift build             # plain debug build
 
 As of this writing, `./scripts/test.sh` runs 303 tests, all green.
 
-The spec lives at `docs/superpowers/specs/2026-08-23-tacit-design.md`; implementation plans are in `docs/superpowers/plans/`; `docs/NEXT-STEPS.md` tracks current status and the backlog.
+The spec lives at `docs/superpowers/specs/2026-08-23-tacit-design.md`; implementation plans are in `docs/superpowers/plans/`. `docs/CODE-REVIEW-2026-08-27.md` holds the current code-review findings, and `EXECUTION-LOG.md` tracks the work outstanding against them. `docs/NEXT-STEPS.md` is an earlier dated handoff (2026-08-24) kept for its backlog — its status figures predate the current defaults and test count.
 
 Default bindings are versioned: `MappingStore.currentDefaultsRevision` is the current number, and `MappingStore.defaultsRevisions` is an ordered list of `DefaultsRevision` entries, each an old→new binding diff. To change a factory default for existing users, bump the revision and append an entry rather than editing `defaultBindings()` in place — that's what lets an existing install pick up the new default without clobbering a binding the user already customized away from the old default.
 
