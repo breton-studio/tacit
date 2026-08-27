@@ -196,6 +196,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
     /// grander constellation draw-on. Lives here, not in `TacitCore` (no `UserDefaults` there).
     private static let firstFireCelebratedKey = "tacit.firstFireCelebrated"
+    /// Code review 2026-08-27, Finding 3: the `.toggleKeystroke` latch's currently-engaged
+    /// `KeyChord`, JSON-encoded via its own `Codable` conformance (`KeyChord.swift:6`). Written by
+    /// `persistLatchedChord(_:)` the instant a real key-down is posted, cleared by
+    /// `clearPersistedLatchedChord()` the instant that key is released. `TacitEngine.init` reads
+    /// this before anything else and replays a leftover key-up unconditionally — cold-start
+    /// recovery for the one release hook that can't be relied on:
+    /// `NSApplication.willTerminateNotification` (handled at `handleApplicationWillTerminate()`)
+    /// never fires on SIGKILL or a crash, so without this key a latched modifier from that class
+    /// of exit had no recovery path at all.
+    private static let latchedChordDefaultsKey = "tacit.latchedChord"
     /// Final-review finding F1: the v1 set of static poses that support hold lifecycle
     /// (began/ended), shared as the SINGLE source of truth between `holdTracker`'s `init` below
     /// and `handleFire(_:)`'s holdable-`.holdKeystroke` guard — previously only the `HoldTracker`
@@ -342,6 +352,24 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private var cancellables: Set<AnyCancellable> = []
 
     init(recorder: FixtureRecorder = FixtureRecorder()) {
+        // Code review 2026-08-27, Finding 3: cold-start recovery, run before anything else below.
+        // If the previous process left a chord latched — crashed or was force-quit while a
+        // `.toggleKeystroke` held a key down — replay its key-up now and clear the record.
+        // Unconditional on Accessibility trust on purpose: this is the one release path that
+        // isn't gated on it, matching the unconditional-release convention every other
+        // stuck-key chokepoint already uses (`releaseLatchIfNeeded()`, `handleHoldEnded(_:)`); a
+        // `postKeyUp` that fails silently because trust was revoked between launches is harmless
+        // either way. Safe to use `actionEnvironment` here even though `self` isn't fully set up
+        // yet: it's a stored property with its own default value (`LiveActionEnvironment.make()`,
+        // declared above), so — unlike `recorder`/`actionDispatcher` just below, which this very
+        // initializer assigns — it's already valid before this body starts running.
+        if let orphanedData = UserDefaults.standard.data(forKey: Self.latchedChordDefaultsKey),
+           let orphaned = try? JSONDecoder().decode(KeyChord.self, from: orphanedData) {
+            _ = actionEnvironment.postKeyUp(orphaned)
+            UserDefaults.standard.removeObject(forKey: Self.latchedChordDefaultsKey)
+            TacitLog.actions.notice("cold-start recovery: orphaned latch chord=\(orphaned.display, privacy: .public) released")
+        }
+
         self.recorder = recorder
         self.actionDispatcher = ActionDispatcher(environment: actionEnvironment)
         let stored = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool
@@ -1110,11 +1138,37 @@ final class TacitEngine: ObservableObject, EngineUIState {
         TacitLog.actions.notice("hold ended: chord=\(chord.display, privacy: .public) up")
     }
 
+    /// Code review 2026-08-27, Finding 3, write half: persists `chord` into `UserDefaults` under
+    /// `tacit.latchedChord` (JSON via `KeyChord`'s `Codable` conformance) so `TacitEngine.init`'s
+    /// cold-start recovery can replay its key-up if this process dies before the matching release.
+    /// Called from `handleToggleFire` immediately after each real `postKeyDown` for an
+    /// `.engaged`/`.swapped` latch-on — as close to that post as possible, so the window between
+    /// the actual key going down and a recovery record existing for it is as small as it can be.
+    private func persistLatchedChord(_ chord: KeyChord) {
+        guard let data = try? JSONEncoder().encode(chord) else { return }
+        UserDefaults.standard.set(data, forKey: Self.latchedChordDefaultsKey)
+    }
+
+    /// Code review 2026-08-27, Finding 3, clear half of `persistLatchedChord(_:)` above — called
+    /// at every site that sets `latchedChord` back to `nil`: `releaseLatchIfNeeded()`,
+    /// `handleToggleFire`'s `.released` transition, and its two untrusted-undo branches (an engage
+    /// computed but never actually posted, or a swap downgraded to a release because Accessibility
+    /// was revoked mid-swap). Keeps the persisted record honest — without this half, an organic
+    /// release would leave a stale chord behind for the next launch's cold-start recovery to post
+    /// a harmless-but-needless key-up for.
+    private func clearPersistedLatchedChord() {
+        UserDefaults.standard.removeObject(forKey: Self.latchedChordDefaultsKey)
+    }
+
     /// A fire of a gesture bound to `.toggleKeystroke`. Engages, releases, or swaps the latch and
     /// posts the matching key events synchronously (`.swapped` posts the old chord's up BEFORE the
     /// new chord's down, so at most one latched key is ever down). User-initiated, so it shows
     /// "<Gesture> → <key> on/off" (Ruling 4); the forced releases in `releaseLatchIfNeeded()` are
     /// silent.
+    ///
+    /// **Finding 3 (crash recovery):** every successful engage/swap-engage below calls
+    /// `persistLatchedChord(_:)` right after its `postKeyDown`; every release path calls
+    /// `clearPersistedLatchedChord()`. See both methods' doc comments for the full accounting.
     ///
     /// **Post-review fix (Accessibility gates engage only, never release):** the trust check used
     /// to run BEFORE `keyLatch.toggle(...)` was even called, so with a chord already latched (real
@@ -1148,12 +1202,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
             guard trusted else {
                 _ = keyLatch.release()
                 latchedChord = keyLatch.active?.chord
+                clearPersistedLatchedChord()
                 if isHUDEnabled {
                     hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
                 }
                 return
             }
             _ = actionEnvironment.postKeyDown(engaged)
+            persistLatchedChord(engaged)
             TacitLog.actions.notice("toggle engaged: chord=\(engaged.display, privacy: .public) down")
             summary = "\(engaged.display) on"
         case .released(let released):
@@ -1161,6 +1217,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // never be gated on Accessibility, or a chord latched while trusted could never be
             // turned back off once trust is revoked.
             _ = actionEnvironment.postKeyUp(released)
+            clearPersistedLatchedChord()
             TacitLog.actions.notice("toggle released: chord=\(released.display, privacy: .public) up")
             summary = "\(released.display) off"
         case .swapped(let released, let engaged):
@@ -1170,12 +1227,14 @@ final class TacitEngine: ObservableObject, EngineUIState {
             guard trusted else {
                 _ = keyLatch.release()
                 latchedChord = keyLatch.active?.chord
+                clearPersistedLatchedChord()
                 if isHUDEnabled {
                     hudController.showError("Keystroke actions need Accessibility — grant it in the Library.")
                 }
                 return
             }
             _ = actionEnvironment.postKeyDown(engaged)
+            persistLatchedChord(engaged)
             TacitLog.actions.notice("toggle swapped: chord=\(engaged.display, privacy: .public) down")
             summary = "\(engaged.display) on"
         }
@@ -1187,6 +1246,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
     /// The single chokepoint for every NON-toggle release of the latch. Posts the key-up
     /// synchronously if — and only if — a chord was actually latched; safe to call when nothing is.
+    /// Also clears the Finding 3 crash-recovery record (`clearPersistedLatchedChord()`) in that
+    /// same case, so a later relaunch doesn't replay a key-up for a chord that's already released.
     /// Silent by design (Ruling 4): the surface that caused it is the feedback.
     ///
     /// **Every place this is called, and why (the stuck-key audit for toggles):**
@@ -1225,6 +1286,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private func releaseLatchIfNeeded() {
         guard let chord = keyLatch.release() else { return }
         latchedChord = nil
+        clearPersistedLatchedChord()
         _ = actionEnvironment.postKeyUp(chord)
         TacitLog.actions.notice("latch force-released: chord=\(chord.display, privacy: .public) up")
     }
@@ -1289,7 +1351,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// This remains best-effort in ONE specific sense unrelated to that fix: macOS doesn't
     /// guarantee this notification fires at all (e.g. a forced quit/SIGKILL skips it entirely) — a
     /// real stuck key from that class of exit is a known, documented limitation outside this
-    /// method's control, not something any user-space code can prevent.
+    /// method's control, not something any user-space code can prevent from happening in the
+    /// moment. Code review 2026-08-27, Finding 3, gives the `.toggleKeystroke` half of that a
+    /// recovery path anyway, on the NEXT launch rather than at this one's exit: `TacitEngine.init`
+    /// replays a persisted latch's key-up unconditionally, before anything else, independent of
+    /// whether this notification ever fired. A stuck `.holdKeystroke` hold has no equivalent —
+    /// the review marks that lower priority, since a hold's window is seconds where a latch's is
+    /// unbounded — so `activeHoldChord` is still only ever in-memory.
     private func handleApplicationWillTerminate() {
         releaseLatchIfNeeded()
         guard holdTracker.reset() != nil else { return }
