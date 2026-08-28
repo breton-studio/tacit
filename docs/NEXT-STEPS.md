@@ -2,7 +2,7 @@
 
 > **Dated snapshot — not current status.** Figures below (23 gestures, 248 tests, defaults
 > revision 3, 46 preview assets) reflect 2026-08-24 and have since moved on; see `README.md` for
-> current behaviour. For live status and outstanding work use `EXECUTION-LOG.md` and
+> current behaviour. For live status and outstanding work use `docs/WORKLOG.md` and
 > `docs/CODE-REVIEW-2026-08-27.md`. The **Post-M4 backlog** section below is still the
 > authoritative backlog.
 
