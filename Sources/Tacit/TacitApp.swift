@@ -63,6 +63,9 @@ private struct MenuBarLabel: View {
     var body: some View {
         Image(nsImage: MenuBarGlyphImageCache.shared.image(for: engine.glyphState))
             .onAppear {
+                engine.debugPanelController.openWindow = { [openWindow] id in
+                    openWindow(id: id)
+                }
                 engine.start()
                 LaunchAtLoginDefault.configureIfNeeded()
                 if !UserDefaults.standard.bool(forKey: OnboardingView.onboardedDefaultsKey) {

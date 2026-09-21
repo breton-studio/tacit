@@ -92,6 +92,13 @@ final class KeyboardCalibrationViewModel: ObservableObject {
 
     var primaryDisabled: Bool { isRecording || step == .evaluating }
 
+    var cameraSelectionDisabled: Bool {
+        switch step {
+        case .introduction, .failure: false
+        default: true
+        }
+    }
+
     func prepare() {
         engine.start()
         engine.setKeyboardCalibrationActive(true)
@@ -243,6 +250,9 @@ struct KeyboardCalibrationView: View {
             VStack(spacing: 8) {
                 Text(model.title)
                     .font(.title2.weight(.semibold))
+                CameraPicker(selection: $engine.cameraID)
+                    .frame(maxWidth: 340)
+                    .disabled(model.cameraSelectionDisabled)
                 Text(engine.activeCameraName)
                     .font(.callout)
                     .foregroundStyle(.secondary)

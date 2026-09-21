@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 import TacitCore
 
@@ -87,33 +86,12 @@ struct SettingsTab: View {
             Text("Use this camera")
                 .font(.body)
             Spacer(minLength: 8)
-            Picker("", selection: $engine.cameraID) {
-                Text("Default").tag(String?.none)
-                ForEach(cameraDevices, id: \.uniqueID) { device in
-                    Text(device.localizedName).tag(String?(device.uniqueID))
-                }
-            }
+            CameraPicker(selection: $engine.cameraID)
             .labelsHidden()
             .frame(maxWidth: 240)
         }
         .frame(minHeight: 44, alignment: .leading)
         .padding(.horizontal, 10)
-    }
-
-    /// `AVCaptureDevice.DiscoverySession` over the three device types the brief calls for: the
-    /// built-in wide-angle camera (present on every Mac with a camera), `.external` (USB/UVC
-    /// webcams — this is also how most Continuity Camera setups enumerate day to day), and
-    /// `.continuityCamera` itself (a dedicated device type since macOS 14, for a paired iPhone
-    /// used as a webcam). `position: .unspecified` so a front/back-facing distinction — meaningless
-    /// for a desk webcam — never excludes a device. Recomputed on every access rather than cached:
-    /// the Settings tab is not a hot path, and this keeps a freshly plugged-in/unplugged device
-    /// current without wiring a separate `AVCaptureDevice.wasConnectedNotification` observer.
-    private var cameraDevices: [AVCaptureDevice] {
-        AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera],
-            mediaType: .video,
-            position: .unspecified
-        ).devices
     }
 
     // MARK: - Keyboard-home calibration

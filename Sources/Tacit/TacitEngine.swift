@@ -550,6 +550,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // CHANGE, so a persisted `isDebugViewEnabled == true` (the default this feature ships with,
         // per the user's request to leave it on) needs this explicit call to actually show the
         // panel at launch rather than waiting for the user to toggle it off and back on.
+        debugPanelController.engine = self
         debugPanelController.setVisible(isDebugViewEnabled)
 
         // Spec §6's Accessibility-warning derivation (Task 20), unified onto the single owned

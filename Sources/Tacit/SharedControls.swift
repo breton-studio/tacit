@@ -1,5 +1,29 @@
+import AVFoundation
 import ServiceManagement
 import SwiftUI
+
+/// Both Settings and calibration use the engine's persisted camera selection.
+struct CameraPicker: View {
+    @Binding var selection: String?
+
+    var body: some View {
+        Picker("Camera", selection: $selection) {
+            Text("Default").tag(String?.none)
+            ForEach(cameraDevices, id: \.uniqueID) { device in
+                Text(device.localizedName).tag(String?(device.uniqueID))
+            }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private var cameraDevices: [AVCaptureDevice] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera],
+            mediaType: .video,
+            position: .unspecified
+        ).devices
+    }
+}
 
 extension View {
     /// A `matchedGeometryEffect` that can be switched off entirely — used by the Library window's

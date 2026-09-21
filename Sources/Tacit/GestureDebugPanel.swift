@@ -25,6 +25,9 @@ final class GestureDebugState: ObservableObject {
 @MainActor
 final class GestureDebugPanelController: NSObject {
     let state = GestureDebugState()
+    weak var engine: TacitEngine?
+    // Supplied by the scene-backed menu bar label; this panel has no SwiftUI scene environment.
+    var openWindow: ((String) -> Void)?
 
     private static let panelSize = NSSize(width: 260, height: 320)
     private static let screenMargin: CGFloat = 16
@@ -55,7 +58,8 @@ final class GestureDebugPanelController: NSObject {
     private func ensurePanel() {
         guard panel == nil else { return }
 
-        let hostingView = NSHostingView(rootView: GestureDebugView(state: state))
+        let hostingView = GestureDebugHostingView(rootView: GestureDebugView(state: state))
+        hostingView.makeContextMenu = { [weak self] in self?.makeContextMenu() }
         hostingView.frame = NSRect(origin: .zero, size: Self.panelSize)
 
         let panel = NSPanel(
@@ -102,6 +106,60 @@ final class GestureDebugPanelController: NSObject {
     private func persistFrame() {
         guard let panel else { return }
         UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: Self.frameDefaultsKey)
+    }
+
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        func add(_ title: String, action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        add("Open Library…", action: #selector(showLibrary))
+        add("Calibrate Camera…", action: #selector(showCalibration))
+        menu.addItem(.separator())
+        let paused = engine?.isEnabled == false || engine?.userPauseEndsAt != nil
+        add(paused ? "Resume Gestures" : "Pause Gestures for an Hour", action: #selector(togglePause))
+        add("Hide Gesture Preview", action: #selector(hidePreview))
+        menu.addItem(.separator())
+        add("Quit Tacit", action: #selector(quit))
+        return menu
+    }
+
+    @objc private func showLibrary() {
+        openWindow?("library")
+        WindowActivator.bringToFront(id: "library", title: "Tacit Library")
+    }
+
+    @objc private func showCalibration() {
+        openWindow?("keyboard-calibration")
+        WindowActivator.bringToFront(id: "keyboard-calibration", title: "Keyboard Gesture Calibration")
+    }
+
+    @objc private func togglePause() {
+        guard let engine else { return }
+        if !engine.isEnabled {
+            engine.isEnabled = true
+        } else if engine.userPauseEndsAt != nil {
+            engine.resumeFromUserPause()
+        } else {
+            engine.pause(for: 3600)
+        }
+    }
+
+    @objc private func hidePreview() { engine?.isDebugViewEnabled = false }
+    @objc private func quit() { NSApp.terminate(nil) }
+}
+
+/// Keep the floating panel draggable while accepting right-clicks across its entire surface.
+private final class GestureDebugHostingView: NSHostingView<GestureDebugView> {
+    var makeContextMenu: (() -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? { makeContextMenu?() }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menu(for: event) else { return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 }
 
