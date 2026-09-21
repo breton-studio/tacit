@@ -22,13 +22,13 @@ Committed so it travels between machines — Claude Code sessions do not.
   and will recalibrate before real use. Tacit does not import that failed capture; it fails closed
   until the active camera passes the in-app flow.
 - **Next actions:**
-  1. At the desk, verify pan/zoom direction and gain in each target app and tune constants from
-     observed behavior rather than synthetic fixtures.
+  1. Position the camera to see the keyboard plus controller zone, recalibrate, then verify
+     pan/zoom direction and gain in each target app at the desk.
   2. Capture recorded typing/reaching/talking negatives and require zero controller engagements.
-  3. Before real use, position the camera to see the keyboard plus controller zone and recalibrate.
-  4. Separately decide the pre-existing clutch-off item (f), still urgent and unchanged.
+  3. Separately decide the pre-existing clutch-off item (f), still urgent and unchanged.
 - **Branch:** `main`
-- **Uncommitted work:** none after the resting-hand controller commit.
+- **Uncommitted work:** none.
+- **Unpushed commits:** none.
 - **Restore the environment:**
   ```bash
   git clone git@github.com:breton-studio/tacit.git && cd tacit
@@ -49,6 +49,20 @@ Committed so it travels between machines — Claude Code sessions do not.
 4. **Hold chords have no crash recovery.** (b) covers the latch only. Documented in `handleApplicationWillTerminate`'s doc comment rather than left silent.
 
 ## Session Log
+
+### 2026-09-20 22:31 EDT — `/h-seal` remote and handoff verification
+
+- **Did:** Fetched `origin/main` and verified the resting-hand controller commit
+  `e89fbbf5696313b1de9376fc2353e386252553b8` was both local `HEAD` and `origin/main` before this
+  log-only seal. Confirmed a clean tree, no unpushed commits, no stashes, one canonical log at
+  `docs/WORKLOG.md`, and the legacy `EXECUTION-LOG.md` pointer. Rechecked the build/test entry
+  points and toolchain versions from the repository and host.
+- **Learned / gotchas:** Restricted Codex shell access cannot enumerate the login-keychain signing
+  identity and reports `CSSMERR_TP_NOT_TRUSTED` for trust evaluation, although the built bundle's
+  signature metadata still identifies `studio.breton.tacit` and Team ID `E9EPERU5JN`. Use a normal
+  interactive shell for certificate-trust diagnostics; this does not alter the already-built app.
+- **Left undone:** Physical desk validation, recorded-hand negative fixtures, and the clutch-off
+  product decision remain the three next actions above.
 
 ### 2026-09-20 — resting-hand controller expansion
 
