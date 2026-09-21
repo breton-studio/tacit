@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import AVFoundation
 import Combine
 import CoreVideo
 import Foundation
@@ -111,6 +112,18 @@ final class TacitEngine: ObservableObject, EngineUIState {
             guard cameraID != oldValue else { return }
             UserDefaults.standard.set(cameraID, forKey: Self.cameraIDDefaultsKey)
             capture.switchCamera(to: cameraID)
+            syncKeyboardHomeProfileToPipeline()
+            objectWillChange.send()
+        }
+    }
+    @Published var isKeyboardHomeEnabled: Bool {
+        didSet {
+            guard isKeyboardHomeEnabled != oldValue else { return }
+            UserDefaults.standard.set(
+                isKeyboardHomeEnabled,
+                forKey: Self.keyboardHomeEnabledDefaultsKey
+            )
+            syncKeyboardHomeProfileToPipeline()
         }
     }
     @Published private(set) var warning: String?
@@ -123,6 +136,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
     @Published private(set) var isCameraUnavailable = false
     @Published private(set) var lastEvent: GestureEvent?
     @Published private(set) var latestFrame: LandmarkFrame?
+    @Published private(set) var latestFrames: [LandmarkFrame] = []
+    @Published private(set) var keyboardLiftState: KeyboardLiftState = .unavailable
     /// Task 19's perform-to-preview: a raw, arbitration-BYPASSING candidate published once per
     /// frame while `isPreviewActive` is true — nil the rest of the time. This is deliberately not
     /// `lastEvent`/arbitration-derived: the Library's card detail strip needs to light up the
@@ -161,6 +176,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     }
 
     let recorder: FixtureRecorder
+    let keyboardCalibrationStore: KeyboardCalibrationStore
 
     /// The persistent gesture→action mapping store (spec §3.6, Task 21 unification): `TacitEngine`
     /// is the SINGLE owner of the app's one `MappingStore` instance — the Library window and
@@ -217,6 +233,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private static let debugViewEnabledDefaultsKey = "tacit.debugViewEnabled"
     private static let sensitivityDefaultsKey = "tacit.sensitivity"
     private static let cameraIDDefaultsKey = "tacit.cameraID"
+    private static let keyboardHomeEnabledDefaultsKey = "tacit.keyboardHomeEnabled"
     private static let requiresClutchDefaultsKey = "tacit.requiresClutch"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
@@ -404,10 +421,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
     init(
         recorder: FixtureRecorder = FixtureRecorder(),
         actionEnvironment: ActionEnvironment = LiveActionEnvironment.make(),
-        mappingStore: MappingStore = MappingStore()
+        mappingStore: MappingStore = MappingStore(),
+        keyboardCalibrationStore: KeyboardCalibrationStore = KeyboardCalibrationStore()
     ) {
         self.actionEnvironment = actionEnvironment
         self.mappingStore = mappingStore
+        self.keyboardCalibrationStore = keyboardCalibrationStore
 
         // Code review 2026-08-27, Finding 3: cold-start recovery, run before anything else below.
         // If the previous process left a chord latched — crashed or was force-quit while a
@@ -441,6 +460,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
         let storedRequiresClutch = UserDefaults.standard.object(forKey: Self.requiresClutchDefaultsKey) as? Bool
         self.requiresClutch = storedRequiresClutch ?? false
         self.cameraID = UserDefaults.standard.string(forKey: Self.cameraIDDefaultsKey)
+        let storedKeyboardHomeEnabled = UserDefaults.standard.object(
+            forKey: Self.keyboardHomeEnabledDefaultsKey
+        ) as? Bool
+        self.isKeyboardHomeEnabled = storedKeyboardHomeEnabled ?? false
 
         capture.$state
             .sink { [weak self] state in
@@ -542,6 +565,56 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
     }
 
+    // MARK: - Keyboard-home calibration
+
+    var activeCameraDevice: AVCaptureDevice? {
+        if let cameraID, let selected = AVCaptureDevice(uniqueID: cameraID) {
+            return selected
+        }
+        return AVCaptureDevice.default(
+            .builtInWideAngleCamera,
+            for: .video,
+            position: .unspecified
+        )
+    }
+
+    var activeCameraUniqueID: String? { activeCameraDevice?.uniqueID }
+    var activeCameraName: String { activeCameraDevice?.localizedName ?? "Unavailable camera" }
+    var activeCameraDeviceType: String { activeCameraDevice?.deviceType.rawValue ?? "unknown" }
+
+    var activeKeyboardCalibrationProfile: KeyboardHomeCalibrationProfile? {
+        keyboardCalibrationStore.profile(for: activeCameraUniqueID)
+    }
+
+    var needsKeyboardCalibration: Bool {
+        isKeyboardHomeEnabled && activeKeyboardCalibrationProfile == nil
+    }
+
+    @discardableResult
+    func installKeyboardCalibrationProfile(_ profile: KeyboardHomeCalibrationProfile) -> Bool {
+        guard profile.cameraID == activeCameraUniqueID else { return false }
+        guard keyboardCalibrationStore.save(profile) else { return false }
+        syncKeyboardHomeProfileToPipeline()
+        objectWillChange.send()
+        return true
+    }
+
+    func setKeyboardCalibrationActive(_ active: Bool) {
+        Task { [pipeline] in
+            await pipeline?.setKeyboardCalibrationActive(active)
+        }
+    }
+
+    private func syncKeyboardHomeProfileToPipeline() {
+        let profile = isKeyboardHomeEnabled ? activeKeyboardCalibrationProfile : nil
+        if profile == nil {
+            keyboardLiftState = .unavailable
+        }
+        Task { [pipeline, profile] in
+            await pipeline?.setKeyboardHomeProfile(profile)
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Wires `capture.onFrame` (must happen before `capture.start()`, on the main actor — see
@@ -581,6 +654,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
         // re-visit the toggle.
         Task { [pipeline, requiresClutch] in
             await pipeline.setClutchRequired(requiresClutch)
+        }
+        let keyboardProfile = isKeyboardHomeEnabled ? activeKeyboardCalibrationProfile : nil
+        Task { [pipeline, keyboardProfile] in
+            await pipeline.setKeyboardHomeProfile(keyboardProfile)
         }
 
         capture.onFrame = { pixelBuffer, timestamp in
@@ -988,6 +1065,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private func apply(_ result: PipelineCore.Result, generation: Int, timestamp: TimeInterval) {
         guard generation == pipelineGeneration else { return }
 
+        latestFrames = result.frames
+        keyboardLiftState = result.keyboardLiftState
         if let frame = result.frame {
             latestFrame = frame
             recorder.append(frame)
@@ -1762,7 +1841,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
 /// thread-safe) is safe precisely because nothing outside this actor's isolated methods ever
 /// touches it — the "confine to one executor" contract `ArbitrationEngine` requires.
 private actor PipelineCore {
-    private let detector = HandPoseDetector()
+    private let singleHandDetector = HandPoseDetector()
+    private let twoHandDetector = HandPoseDetector(maximumHandCount: 2)
     private let classifier = StaticPoseClassifier()
     private let arbitration = ArbitrationEngine()
     /// M3 Task 6: the un-adjusted tuning `arbitration` was constructed with — kept here (not just
@@ -1789,6 +1869,9 @@ private actor PipelineCore {
     /// value; `TacitEngine.start()` applies the real persisted value (default `false`) once,
     /// exactly like it already does for `currentSensitivity`.
     private var currentRequiresClutch = true
+    private var keyboardHomeProfile: KeyboardHomeCalibrationProfile?
+    private var keyboardLiftDetector = KeyboardLiftDetector()
+    private var keyboardCalibrationActive = false
 
     /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
     /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
@@ -1843,7 +1926,9 @@ private actor PipelineCore {
     private static let previewLatchDuration: TimeInterval = 0.6
 
     struct Result: Sendable {
+        var frames: [LandmarkFrame]
         var frame: LandmarkFrame?
+        var keyboardLiftState: KeyboardLiftState
         var arbitrationState: ArbitrationState
         var event: GestureEvent?
         /// Raw candidate for Task 19's preview strip, bypassing arbitration entirely — nil unless
@@ -1911,8 +1996,16 @@ private actor PipelineCore {
     /// latch is checked against that instead of `frame.timestamp` when there's no frame to read one
     /// from.
     func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) async -> Result {
-        let frames = await detector.detect(in: pixelBuffer, timestamp: timestamp)
+        let frames: [LandmarkFrame]
+        if keyboardHomeProfile != nil || keyboardCalibrationActive {
+            frames = await twoHandDetector.detect(in: pixelBuffer, timestamp: timestamp)
+        } else {
+            frames = await singleHandDetector.detect(in: pixelBuffer, timestamp: timestamp)
+        }
         let frame = frames.first
+        let keyboardLiftState = keyboardHomeProfile.map {
+            keyboardLiftDetector.ingest(frames, profile: $0)
+        } ?? .unavailable
         let candidate = frame.flatMap(classifier.classify)
         let staticEvent = arbitration.ingest(candidate, at: timestamp)
 
@@ -1959,7 +2052,9 @@ private actor PipelineCore {
         }
 
         return Result(
+            frames: frames,
             frame: frame,
+            keyboardLiftState: keyboardLiftState,
             arbitrationState: arbitration.state,
             event: event,
             previewCandidate: previewCandidate,
@@ -1971,6 +2066,7 @@ private actor PipelineCore {
     /// briefly show stale progress from before the pause.
     func reset() {
         arbitration.reset()
+        keyboardLiftDetector.reset()
     }
 
     /// M3 Task 9: forwards to `ArbitrationEngine.extendWindow(at:)`, called by `TacitEngine` once
@@ -2024,6 +2120,15 @@ private actor PipelineCore {
     func setClutchRequired(_ required: Bool) {
         currentRequiresClutch = required
         recomputeTuning()
+    }
+
+    func setKeyboardHomeProfile(_ profile: KeyboardHomeCalibrationProfile?) {
+        keyboardHomeProfile = profile
+        keyboardLiftDetector.reset()
+    }
+
+    func setKeyboardCalibrationActive(_ active: Bool) {
+        keyboardCalibrationActive = active
     }
 
     /// Fix (M3 Task 7): the M3 Task 6 version of this recompute swapped `arbitration`'s tuning

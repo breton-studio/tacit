@@ -17,6 +17,7 @@ import TacitCore
 /// of either setting.
 struct SettingsTab: View {
     @ObservedObject var engine: TacitEngine
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ScrollView {
@@ -24,6 +25,12 @@ struct SettingsTab: View {
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeader("Camera")
                     cameraPickerRow
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader("Keyboard gestures")
+                    keyboardHomeToggleRow
+                    keyboardCalibrationRow
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -91,10 +98,77 @@ struct SettingsTab: View {
     /// current without wiring a separate `AVCaptureDevice.wasConnectedNotification` observer.
     private var cameraDevices: [AVCaptureDevice] {
         AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera],
             mediaType: .video,
             position: .unspecified
         ).devices
+    }
+
+    // MARK: - Keyboard-home calibration
+
+    private var keyboardHomeToggleRow: some View {
+        Toggle(isOn: $engine.isKeyboardHomeEnabled) {
+            Text("Enable keyboard-home gestures")
+                .font(.body)
+        }
+        .toggleStyle(TacitToggleStyle())
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+        .onChange(of: engine.isKeyboardHomeEnabled) { _, enabled in
+            if enabled && engine.activeKeyboardCalibrationProfile == nil {
+                openCalibration()
+            }
+        }
+    }
+
+    private var keyboardCalibrationRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(keyboardHomeStatus)
+                    .font(.body)
+                Text(engine.activeCameraName)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(
+                engine.activeKeyboardCalibrationProfile == nil
+                    ? "Calibrate…"
+                    : "Recalibrate…",
+                action: openCalibration
+            )
+            .buttonStyle(TacitButtonStyle())
+        }
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+        .onChange(of: engine.cameraID) { _, _ in
+            if engine.isKeyboardHomeEnabled && engine.activeKeyboardCalibrationProfile == nil {
+                openCalibration()
+            }
+        }
+    }
+
+    private var keyboardHomeStatus: String {
+        guard engine.activeKeyboardCalibrationProfile != nil else {
+            return "Calibration required"
+        }
+        guard engine.isKeyboardHomeEnabled else { return "Calibrated" }
+
+        switch engine.keyboardLiftState {
+        case .unavailable: return "Calibrated · waiting for camera"
+        case .resting: return "Live · hands resting"
+        case .leftLifted: return "Live · left hand lifted"
+        case .rightLifted: return "Live · right hand lifted"
+        case .bothLifted: return "Live · both hands lifted"
+        }
+    }
+
+    private func openCalibration() {
+        openWindow(id: "keyboard-calibration")
+        WindowActivator.bringToFront(
+            id: "keyboard-calibration",
+            title: "Keyboard Gesture Calibration"
+        )
     }
 
     // MARK: - Sensitivity

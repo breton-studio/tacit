@@ -10,25 +10,35 @@ Committed so it travels between machines — Claude Code sessions do not.
 
 ## RESUME
 
-- **Status:** The 2026-08-27 code review is fully remediated. All five items (a)–(e) landed on `main`, working tree clean, `./scripts/test.sh` → **322 tests, 5 suites, exit 0, exactly 22 known issues**. Nothing is half-done.
+- **Status:** The first keyboard-home vertical slice is implemented on `main`: guided
+  typing/left-lift/right-lift calibration, strict target-side gates, atomic versioned per-camera
+  profiles, two-hand Vision input, per-side lift thresholds with hysteresis, automatic routing
+  when an enabled camera lacks a profile, an always-available Settings recalibration entry, and
+  live gate status. `./scripts/test.sh` → **328 tests, 5 suites, exit 0, exactly 22 known issues**.
+- **Evidence boundary:** the latest Brio CLI capture in `~/Developer/desk-gestures` failed the
+  strict target-hand gate (left 89.2%, right 4.1%; 80% required), although center-y separated both
+  lifts from typing at AUC 1.0 in that session. Hoyd authorized using it to unblock development
+  and will recalibrate before real use. Tacit does not import that failed capture; it fails closed
+  until the active camera passes the in-app flow.
 - **Next actions:**
-  1. **`git push`** — six commits exist ONLY on this Mac (see below). Do this first.
-  2. **Decide item (f)** — the clutch-off default. Item (a) measured the shipped `requiresClutch = false` firing ~104 gestures per 60 s of synthetic typing, 11/11 seeds, including ~3.5 spurious ⌘Z per minute. This was deferred pending that measurement; it is in, and it is bad.
-  3. Optionally close the three other open decisions listed under "Open decisions" below.
+  1. Define and wire the tiny command vocabulary that becomes active inside the calibrated lift
+     window. Do not dispatch from an unavailable/uncalibrated state.
+  2. Capture recorded typing/reaching/talking negatives and require zero keyboard-home
+     engagements before binding destructive actions.
+  3. Before real use, reposition the camera and pass the in-app calibration for both hands.
+  4. Separately decide the pre-existing clutch-off item (f), still urgent and unchanged.
 - **Branch:** `main`
-- **Uncommitted work:** none — tree is clean
-- **Unpushed commits:** ⚠️ **SIX, and they will not travel until pushed**
-  `fe5cc94` `3e3c495` `a2e8244` `9fc5f2c` `fc6f8b8` `3cb00f6`
+- **Uncommitted work:** none after the keyboard-home slice commit.
 - **Restore the environment:**
   ```bash
   git clone git@github.com:breton-studio/tacit.git && cd tacit
   ./scripts/test.sh          # swift test, pinned to DEVELOPER_DIR=/Applications/Xcode.app
-  ./scripts/make-app.sh      # only needed for MANUAL verification, not for tests
+  ./scripts/make-app.sh      # builds and signs build/Tacit.app
   ```
   Zero external package dependencies — nothing to fetch beyond the toolchain.
 - **Env & secrets:** none. No network client, no credentials, no `.env`. `.secrets/` is gitignored and has never been committed.
 - **Platform notes:** Swift 6.3.3, Xcode 26.6 (17F113), `swift-tools-version: 6.0`, `platforms: [.macOS(.v15)]`. **TCC keys Accessibility/Camera grants to the signing identity** — rebuilding via `make-app.sh` without a stable Apple Development identity drops the grants every time. Tests need neither camera nor permissions.
-- **Verify you're back:** `./scripts/test.sh` reports **322 tests / 5 suites / exit 0 / 22 known issues**. If the known-issue count is not exactly 22, something regressed or the shipped clutch default was altered — investigate before doing anything else.
+- **Verify you're back:** `./scripts/test.sh` reports **328 tests / 5 suites / exit 0 / 22 known issues** and `./scripts/make-app.sh` emits a signed `build/Tacit.app`. If the known-issue count is not exactly 22, something regressed or the shipped clutch default was altered — investigate before doing anything else.
 - **Blockers / open questions:** none blocking code. Four things wait on a human decision — see "Open decisions".
 
 ## Open decisions (waiting on the maker, not on code)
@@ -40,9 +50,30 @@ Committed so it travels between machines — Claude Code sessions do not.
 
 ## Session Log
 
+### 2026-09-20 — keyboard-home calibration and physical lift gate
+
+- **Built:** `KeyboardHomeCalibrator` derives independent physical-left/physical-right center-y
+  rules and learns which image side each physical hand occupies, so camera mirroring cannot swap
+  them. It accepts a rule only after both hands are visible while typing, the instructed target
+  reaches 15/21 joints at confidence 0.7 in at least 80% of lift frames, and typing-versus-lift
+  AUC reaches 0.9. A resting
+  hand cannot satisfy the instructed side's gate.
+- **Runtime:** Vision now returns up to two hands. `KeyboardLiftDetector` uses the saved image split,
+  per-side thresholds, and three-frame enter/exit hysteresis; missing or stale profiles fail closed.
+- **Persistence/UI:** profiles are schema-versioned, keyed by `AVCaptureDevice.uniqueID`, and
+  written atomically under Application Support. The shared calibration window is automatically
+  offered for an enabled mode with no active-camera profile and is always relaunchable from
+  Library → Settings. Failed/cancelled attempts do not overwrite a valid profile.
+- **Verification:** six new calibration/store tests; full suite **328/5/22**, exit 0. Release app
+  built with `studio.breton.tacit`, Team ID `E9EPERU5JN`, and passed strict designated-requirement
+  verification.
+- **Not yet built:** the discrete command vocabulary that consumes the lift gate. This slice
+  makes calibration and engagement measurable/relaunchable; it does not claim keyboard-home
+  actions are ready for daily use.
+
 ### 2026-08-27 — code-review remediation, items (a)–(e)
 
-- **Did:** Closed findings 1–5 from `docs/CODE-REVIEW-2026-08-27.md` in the order b → c → a → d → e. Six commits, listed under "Unpushed commits" above. Test baseline moved 303 → 322.
+- **Did:** Closed findings 1–5 from `docs/CODE-REVIEW-2026-08-27.md` in the order b → c → a → d → e. Six commits landed. Test baseline moved 303 → 322.
 - **Learned / gotchas:**
   - A `.testTarget` CAN depend on the `Tacit` `executableTarget` on Swift 6.3.3 — `@testable import Tacit` builds and runs. The library-extraction fallback the review hedged about was never needed.
   - `TacitEngine`'s default `MappingStore()` reads and writes the developer's REAL `~/Library/Application Support/Tacit/mappings.json`. Tests must inject an isolated store or they scribble on live app config.

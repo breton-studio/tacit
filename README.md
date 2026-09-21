@@ -8,6 +8,7 @@ A macOS menu bar app that watches your webcam for hand gestures and turns them i
 - Build and run it: `./scripts/make-app.sh && open build/Tacit.app`.
 - Out of the box: thumb taps switch apps, a palm tilt switches apps, holding a point gesture dictates (Fn, for Wispr Flow-style push-to-talk), a victory sign toggles hands-free dictation, thumbs-up focuses a text field, and thumb swipes are undo/redo. Everything else ships off with a suggested binding.
 - Two things people trip on: (1) keystroke actions need **Accessibility** permission, granted during first-run onboarding; (2) the **clutch** (a fist-hold "arm" gesture) is optional and **off by default** — gestures fire the moment they're recognized, at a stricter confidence floor, not after a fist hold.
+- The experimental **keyboard-home** mode is off by default. It learns a separate profile for each camera from a guided typing/left-lift/right-lift calibration, fails closed without one, and can always be recalibrated from Library → Settings.
 
 ## What it does
 
@@ -81,6 +82,11 @@ open build/Tacit.app
 
 First launch walks you through onboarding: camera access, Accessibility access, and a look at the default bindings. Launch-at-login is turned on by default after that first run.
 
+Keyboard-home gestures have their own camera-specific setup. Enable them in Library → Settings;
+Tacit opens **Keyboard Gesture Calibration** if the selected camera has no current profile. Use
+**Calibrate…/Recalibrate…** in the same Settings section whenever you move the camera, keyboard,
+or app to another Mac. A failed or cancelled attempt leaves the previous valid profile unchanged.
+
 ## Permissions & troubleshooting
 
 - **Camera** is required for any recognition at all.
@@ -115,7 +121,7 @@ Tacit's computer vision pipeline is native and entirely on-device:
 
 1. **AVFoundation** captures the selected camera at a preferred 1280×720 resolution and requests 30 FPS. Late frames are discarded.
 2. Tacit throttles hand-pose inference to about 15 FPS and buffers only the newest frame, so a slow inference cannot build a queue of stale camera frames.
-3. Apple's [`VNDetectHumanHandPoseRequest`](https://developer.apple.com/documentation/vision/vndetecthumanhandposerequest) detects at most one hand and returns 21 normalized 2D joint positions with confidence values. Tacit drops joints below 0.3 confidence and un-mirrors the horizontal coordinate.
+3. Apple's [`VNDetectHumanHandPoseRequest`](https://developer.apple.com/documentation/vision/vndetecthumanhandposerequest) returns 21 normalized 2D joint positions with confidence values. Tacit requests one hand for the established gesture vocabulary and two only while keyboard-home calibration or its calibrated gate is active, avoiding a default-path behavior/performance change. It drops joints below 0.3 confidence and un-mirrors the horizontal coordinate.
 4. Handwritten Swift geometry classifies static poses and measures motion for taps, swipes, palm tilts, wrist rotation, and scrolling. Arbitration then applies confidence thresholds, debounce, cooldown, and the optional clutch before an action can run.
 
 There is no OpenCV, MediaPipe, cloud inference, bundled custom Core ML model, external computer-vision service, or API key. Apple Vision supplies the hand landmarks; Tacit supplies the gesture vocabulary and intent rules.
@@ -151,7 +157,8 @@ swift build             # plain debug build
 ./scripts/make-icon.sh  # regenerates Sources/Tacit/Resources/AppIcon.icns from code
 ```
 
-As of this writing, `./scripts/test.sh` runs 303 tests, all green.
+As of this writing, `./scripts/test.sh` runs 328 tests across 5 suites. The run exits green with
+22 explicitly recorded known issues from the existing clutch-off synthetic-noise measurement.
 
 The spec lives at `docs/superpowers/specs/2026-08-23-tacit-design.md`; implementation plans are in `docs/superpowers/plans/`. `docs/CODE-REVIEW-2026-08-27.md` holds the current code-review findings, and `docs/WORKLOG.md` is the canonical work log — its RESUME block tracks what is outstanding. `docs/NEXT-STEPS.md` is an earlier dated handoff (2026-08-24) kept for its backlog — its status figures predate the current defaults and test count.
 
@@ -164,6 +171,10 @@ Holding ⌥ in the menu bar popover reveals a hidden fixture recorder for captur
 - Three gestures — `palmPush`, `wave`, `twoHandFrame` — have no detector yet. Their Library cards say so honestly rather than pretending they work.
 - The four directional hand swipes are recognized and bindable but ship disabled — they weren't detecting reliably enough for everyone, so palm tilt took over app-switching duty instead.
 - The glove renders from hb-motion are a work in progress (proportions, some poses read slightly off).
+- Keyboard-home calibration and its live physical lift gate are implemented, but the command
+  vocabulary behind that gate is not yet wired. The latest Brio development capture failed the
+  strict right-hand visibility threshold, so real use requires repositioning and a passing in-app
+  calibration; no failed probe data is installed as a profile.
 - No App Store build: this is a direct-download, non-sandboxed app, since keystroke synthesis (`CGEvent`) needs Accessibility and isn't sandbox-friendly. The action layer is deliberately seamed so a future sandboxed variant could drop just that piece.
 
 ## Author

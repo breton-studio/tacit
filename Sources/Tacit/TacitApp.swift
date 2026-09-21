@@ -36,6 +36,11 @@ struct TacitApp: App {
             OnboardingView(engine: engine, store: engine.mappingStore)
         }
         .windowResizability(.contentSize)
+
+        Window("Keyboard Gesture Calibration", id: "keyboard-calibration") {
+            KeyboardCalibrationView(engine: engine)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -63,6 +68,12 @@ private struct MenuBarLabel: View {
                 if !UserDefaults.standard.bool(forKey: OnboardingView.onboardedDefaultsKey) {
                     openWindow(id: "onboarding")
                     WindowActivator.bringToFront(id: "onboarding", title: "Welcome to Tacit")
+                } else if engine.needsKeyboardCalibration {
+                    openWindow(id: "keyboard-calibration")
+                    WindowActivator.bringToFront(
+                        id: "keyboard-calibration",
+                        title: "Keyboard Gesture Calibration"
+                    )
                 }
             }
     }
