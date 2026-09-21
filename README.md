@@ -7,6 +7,7 @@ A macOS menu bar app that watches your webcam for hand gestures and turns them i
 - Tacit lives in the menu bar. It watches your hand through the built-in webcam, recognizes a gesture, and fires whatever you've bound to it — a keystroke, an app switch, opening a URL, running a Shortcut. Recognition runs entirely on-device via Apple's Vision framework; nothing leaves the Mac.
 - Build and run it: `./scripts/make-app.sh && open build/Tacit.app`.
 - Out of the box: thumb taps switch apps, a palm tilt switches apps, holding a point gesture dictates (Fn, for Wispr Flow-style push-to-talk), a victory sign toggles hands-free dictation, thumbs-up focuses a text field, and thumb swipes are undo/redo. Everything else ships off with a suggested binding.
+- The resting-hand controller is on by default: for a right-handed setup, the left hand rests beside the keyboard in its calibrated zone. A light pinch engages continuous pan/scroll; moving toward or away from the camera zooms. Settings can swap the controller to the right hand.
 - Two things people trip on: (1) keystroke actions need **Accessibility** permission, granted during first-run onboarding; (2) the **clutch** (a fist-hold "arm" gesture) is optional and **off by default** — gestures fire the moment they're recognized, at a stricter confidence floor, not after a fist hold.
 - The experimental **keyboard-home** mode is off by default. It learns a separate profile for each camera from a guided typing/left-lift/right-lift calibration, fails closed without one, and can always be recalibrated from Library → Settings.
 
@@ -87,6 +88,29 @@ Tacit opens **Keyboard Gesture Calibration** if the selected camera has no curre
 **Calibrate…/Recalibrate…** in the same Settings section whenever you move the camera, keyboard,
 or app to another Mac. A failed or cancelled attempt leaves the previous valid profile unchanged.
 
+The resting-hand controller reuses that same per-camera calibration, including its learned physical
+left/right mapping. For the best combined result, frame the whole keyboard plus the resting-hand
+area beside it. A monitor-top camera can see the modifier hand well if it remains beside the
+keyboard; keyboard-home lifts benefit from an external camera angled downward or Continuity Camera
+Desk View. Keep both forearms supported, the complete controller hand visible, and the desk evenly
+lit. After positioning the camera, run Recalibrate once.
+
+### Resting-hand controls
+
+The calibrated zone is the clutch: leaving it immediately ends continuous output, and calibration
+mode cannot dispatch actions. The small floating chip says when the controller is ready or engaged.
+
+| Gesture | Figma | Blender | Fusion 360 | Browser / Finder / Terminal |
+|---|---|---|---|---|
+| Light pinch + hand motion | Canvas pan | Shift-middle-drag pan | Middle-drag pan | Two-axis scroll |
+| Pinch + toward/away motion | Command-scroll zoom | Wheel zoom | Wheel zoom | Command +/- zoom |
+| Thumb–index tap | Previous app | Previous app | Previous app | Previous app |
+| Thumb–middle tap | Next app | Next app | Next app | Next app |
+| Hold a relaxed index point | Hold Fn for Wispr Flow | Same | Same | Same |
+
+These event profiles are selected from the frontmost app; unrecognized apps use the conservative
+scroll plus Command +/- behavior. Existing custom gesture bindings remain untouched.
+
 ## Permissions & troubleshooting
 
 - **Camera** is required for any recognition at all.
@@ -106,6 +130,7 @@ or app to another Mac. A failed or cancelled attempt leaves the previous valid p
 
 ```
 camera → Vision hand pose (21 landmarks)
+       → calibrated controller-hand zone + One Euro motion filter
        → static pose classifier + dynamic detectors (swipes, rotate, scroll, pinch-drag, palm tilt)
        → arbitration (debounce, cooldown, optional clutch, confidence floor)
        → mapping store (gesture → action)
@@ -121,7 +146,7 @@ Tacit's computer vision pipeline is native and entirely on-device:
 
 1. **AVFoundation** captures the selected camera at a preferred 1280×720 resolution and requests 30 FPS. Late frames are discarded.
 2. Tacit throttles hand-pose inference to about 15 FPS and buffers only the newest frame, so a slow inference cannot build a queue of stale camera frames.
-3. Apple's [`VNDetectHumanHandPoseRequest`](https://developer.apple.com/documentation/vision/vndetecthumanhandposerequest) returns 21 normalized 2D joint positions with confidence values. Tacit requests one hand for the established gesture vocabulary and two only while keyboard-home calibration or its calibrated gate is active, avoiding a default-path behavior/performance change. It drops joints below 0.3 confidence and un-mirrors the horizontal coordinate.
+3. Apple's [`VNDetectHumanHandPoseRequest`](https://developer.apple.com/documentation/vision/vndetecthumanhandposerequest) returns 21 normalized 2D joint positions with confidence values. Tacit requests one hand for the legacy gesture mode and two while keyboard-home calibration, its calibrated gate, or the resting-hand controller is active. It drops joints below 0.3 confidence and un-mirrors the horizontal coordinate.
 4. Handwritten Swift geometry classifies static poses and measures motion for taps, swipes, palm tilts, wrist rotation, and scrolling. Arbitration then applies confidence thresholds, debounce, cooldown, and the optional clutch before an action can run.
 
 There is no OpenCV, MediaPipe, cloud inference, bundled custom Core ML model, external computer-vision service, or API key. Apple Vision supplies the hand landmarks; Tacit supplies the gesture vocabulary and intent rules.
@@ -157,7 +182,7 @@ swift build             # plain debug build
 ./scripts/make-icon.sh  # regenerates Sources/Tacit/Resources/AppIcon.icns from code
 ```
 
-As of this writing, `./scripts/test.sh` runs 328 tests across 5 suites. The run exits green with
+As of this writing, `./scripts/test.sh` runs 336 tests across 5 suites. The run exits green with
 22 explicitly recorded known issues from the existing clutch-off synthetic-noise measurement.
 
 The spec lives at `docs/superpowers/specs/2026-08-23-tacit-design.md`; implementation plans are in `docs/superpowers/plans/`. `docs/CODE-REVIEW-2026-08-27.md` holds the current code-review findings, and `docs/WORKLOG.md` is the canonical work log — its RESUME block tracks what is outstanding. `docs/NEXT-STEPS.md` is an earlier dated handoff (2026-08-24) kept for its backlog — its status figures predate the current defaults and test count.
@@ -171,10 +196,9 @@ Holding ⌥ in the menu bar popover reveals a hidden fixture recorder for captur
 - Three gestures — `palmPush`, `wave`, `twoHandFrame` — have no detector yet. Their Library cards say so honestly rather than pretending they work.
 - The four directional hand swipes are recognized and bindable but ship disabled — they weren't detecting reliably enough for everyone, so palm tilt took over app-switching duty instead.
 - The glove renders from hb-motion are a work in progress (proportions, some poses read slightly off).
-- Keyboard-home calibration and its live physical lift gate are implemented, but the command
-  vocabulary behind that gate is not yet wired. The latest Brio development capture failed the
-  strict right-hand visibility threshold, so real use requires repositioning and a passing in-app
-  calibration; no failed probe data is installed as a profile.
+- The resting-hand controller is implemented for Figma, Blender, Fusion 360, browsers, Finder, and
+  Terminal, but its gain and direction still need a real-desk smoke test in each target app. The
+  controller fails closed without a current profile; moving the camera still requires recalibration.
 - No App Store build: this is a direct-download, non-sandboxed app, since keystroke synthesis (`CGEvent`) needs Accessibility and isn't sandbox-friendly. The action layer is deliberately seamed so a future sandboxed variant could drop just that piece.
 
 ## Author

@@ -10,25 +10,25 @@ Committed so it travels between machines — Claude Code sessions do not.
 
 ## RESUME
 
-- **Status:** The first keyboard-home vertical slice is implemented on `main`: guided
-  typing/left-lift/right-lift calibration, strict target-side gates, atomic versioned per-camera
-  profiles, two-hand Vision input, per-side lift thresholds with hysteresis, automatic routing
-  when an enabled camera lacks a profile, an always-available Settings recalibration entry, and
-  live gate status. `./scripts/test.sh` → **328 tests, 5 suites, exit 0, exactly 22 known issues**.
+- **Status:** The calibrated resting-hand controller is implemented: left hand by default with a
+  persisted handedness picker, zone-gated pinch engagement, One Euro smoothing, visible
+  ready/engaged feedback, app-aware continuous pan/scroll/zoom for Figma, Blender, Fusion 360,
+  browsers, Finder, and Terminal, plus the existing Fn hold and app-switch thumb taps. It reuses
+  the relaunchable per-camera keyboard calibration and fails closed without one. Full suite:
+  **336 tests, 5 suites, exit 0, exactly 22 known issues**.
 - **Evidence boundary:** the latest Brio CLI capture in `~/Developer/desk-gestures` failed the
   strict target-hand gate (left 89.2%, right 4.1%; 80% required), although center-y separated both
   lifts from typing at AUC 1.0 in that session. Hoyd authorized using it to unblock development
   and will recalibrate before real use. Tacit does not import that failed capture; it fails closed
   until the active camera passes the in-app flow.
 - **Next actions:**
-  1. Define and wire the tiny command vocabulary that becomes active inside the calibrated lift
-     window. Do not dispatch from an unavailable/uncalibrated state.
-  2. Capture recorded typing/reaching/talking negatives and require zero keyboard-home
-     engagements before binding destructive actions.
-  3. Before real use, reposition the camera and pass the in-app calibration for both hands.
+  1. At the desk, verify pan/zoom direction and gain in each target app and tune constants from
+     observed behavior rather than synthetic fixtures.
+  2. Capture recorded typing/reaching/talking negatives and require zero controller engagements.
+  3. Before real use, position the camera to see the keyboard plus controller zone and recalibrate.
   4. Separately decide the pre-existing clutch-off item (f), still urgent and unchanged.
 - **Branch:** `main`
-- **Uncommitted work:** none after the keyboard-home slice commit.
+- **Uncommitted work:** none after the resting-hand controller commit.
 - **Restore the environment:**
   ```bash
   git clone git@github.com:breton-studio/tacit.git && cd tacit
@@ -38,7 +38,7 @@ Committed so it travels between machines — Claude Code sessions do not.
   Zero external package dependencies — nothing to fetch beyond the toolchain.
 - **Env & secrets:** none. No network client, no credentials, no `.env`. `.secrets/` is gitignored and has never been committed.
 - **Platform notes:** Swift 6.3.3, Xcode 26.6 (17F113), `swift-tools-version: 6.0`, `platforms: [.macOS(.v15)]`. **TCC keys Accessibility/Camera grants to the signing identity** — rebuilding via `make-app.sh` without a stable Apple Development identity drops the grants every time. Tests need neither camera nor permissions.
-- **Verify you're back:** `./scripts/test.sh` reports **328 tests / 5 suites / exit 0 / 22 known issues** and `./scripts/make-app.sh` emits a signed `build/Tacit.app`. If the known-issue count is not exactly 22, something regressed or the shipped clutch default was altered — investigate before doing anything else.
+- **Verify you're back:** `./scripts/test.sh` reports **336 tests / 5 suites / exit 0 / 22 known issues** and `./scripts/make-app.sh` emits a signed `build/Tacit.app`. If the known-issue count is not exactly 22, something regressed or the shipped clutch default was altered — investigate before doing anything else.
 - **Blockers / open questions:** none blocking code. Four things wait on a human decision — see "Open decisions".
 
 ## Open decisions (waiting on the maker, not on code)
@@ -49,6 +49,21 @@ Committed so it travels between machines — Claude Code sessions do not.
 4. **Hold chords have no crash recovery.** (b) covers the latch only. Documented in `handleApplicationWillTerminate`'s doc comment rather than left silent.
 
 ## Session Log
+
+### 2026-09-20 — resting-hand controller expansion
+
+- **Interaction:** The calibrated camera half and keyboard-height band are now the physical clutch.
+  Three closed-pinch frames engage; asymmetric open/close thresholds prevent chatter; leaving the
+  zone or entering calibration ends output. Palm-normalized translation and apparent depth pass
+  through a timestamp-driven One Euro filter.
+- **Dispatch:** Figma receives two-axis scroll pan and Command-scroll zoom; Blender receives
+  Shift-middle-drag pan and wheel zoom; Fusion 360 receives middle-drag pan and wheel zoom; other
+  apps receive two-axis scroll and Command +/- zoom. A disengage always posts the paired middle-up.
+- **Defaults/UI:** physical left is the persisted default for a right-handed user and is changeable
+  in Settings. Existing revision-8 Fn/app-switch bindings were already correct and were not
+  rewritten, preserving deliberate custom bindings. A non-activating chip shows ready/engaged.
+- **Verification:** eight new controller/dispatch tests; full suite **336/5/22**, exit 0. Real-app
+  direction/gain validation remains the first desk smoke test.
 
 ### 2026-09-20 — keyboard-home calibration and physical lift gate
 

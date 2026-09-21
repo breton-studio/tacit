@@ -113,6 +113,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
             UserDefaults.standard.set(cameraID, forKey: Self.cameraIDDefaultsKey)
             capture.switchCamera(to: cameraID)
             syncKeyboardHomeProfileToPipeline()
+            syncModifierHandProfileToPipeline()
             objectWillChange.send()
         }
     }
@@ -124,6 +125,26 @@ final class TacitEngine: ObservableObject, EngineUIState {
                 forKey: Self.keyboardHomeEnabledDefaultsKey
             )
             syncKeyboardHomeProfileToPipeline()
+        }
+    }
+    /// Enables the research-backed resting-hand controller. It uses the current camera's keyboard
+    /// calibration as its physical zone/clutch, so changing cameras naturally requires the same
+    /// relaunchable calibration experience rather than a second, divergent setup flow.
+    @Published var isModifierHandEnabled: Bool {
+        didSet {
+            guard isModifierHandEnabled != oldValue else { return }
+            UserDefaults.standard.set(isModifierHandEnabled, forKey: Self.modifierHandEnabledDefaultsKey)
+            syncModifierHandProfileToPipeline()
+            recomputeAccessibilityWarning()
+        }
+    }
+    /// The physical controller hand. Right-handed users default to `.left`; changing it reuses the
+    /// opposite hand rule learned during the same per-camera calibration.
+    @Published var controllerHand: ControllerHand {
+        didSet {
+            guard controllerHand != oldValue else { return }
+            UserDefaults.standard.set(controllerHand.rawValue, forKey: Self.controllerHandDefaultsKey)
+            syncModifierHandProfileToPipeline()
         }
     }
     @Published private(set) var warning: String?
@@ -138,6 +159,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
     @Published private(set) var latestFrame: LandmarkFrame?
     @Published private(set) var latestFrames: [LandmarkFrame] = []
     @Published private(set) var keyboardLiftState: KeyboardLiftState = .unavailable
+    @Published private(set) var modifierHandState: ModifierHandState = .unavailable
     /// Task 19's perform-to-preview: a raw, arbitration-BYPASSING candidate published once per
     /// frame while `isPreviewActive` is true — nil the rest of the time. This is deliberately not
     /// `lastEvent`/arbitration-derived: the Library's card detail strip needs to light up the
@@ -227,6 +249,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// comment for the full design; wired to `isDebugViewEnabled`/`debugSnapshot` in `init` below,
     /// the same "owned directly by the engine" pattern as `hudController` above.
     let debugPanelController = GestureDebugPanelController()
+    private let modifierStatusController = ModifierStatusController()
+    private let continuousActionDispatcher: ContinuousActionDispatcher
 
     private static let enabledDefaultsKey = "tacit.enabled"
     private static let hudEnabledDefaultsKey = "tacit.hudEnabled"
@@ -234,6 +258,8 @@ final class TacitEngine: ObservableObject, EngineUIState {
     private static let sensitivityDefaultsKey = "tacit.sensitivity"
     private static let cameraIDDefaultsKey = "tacit.cameraID"
     private static let keyboardHomeEnabledDefaultsKey = "tacit.keyboardHomeEnabled"
+    private static let modifierHandEnabledDefaultsKey = "tacit.modifierHandEnabled"
+    private static let controllerHandDefaultsKey = "tacit.controllerHand"
     private static let requiresClutchDefaultsKey = "tacit.requiresClutch"
     /// Task 21 controller ruling (R4): set the first time — ever — a mapped gesture successfully
     /// performs its action, so that one fire (and only that one) can ask the HUD for a slightly
@@ -340,9 +366,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
     /// this policy itself.
     private var lowLightPolicy = LowLightPolicy()
     /// True while at least one ENABLED binding's action `requiresAccessibility` — recomputed
-    /// whenever `mappingStore.bindings` changes (wired below, in `init`). Kept as a stored flag
-    /// (rather than re-scanning bindings on every 5 s poll tick) so the poll loop only ever has to
-    /// ask one question: is Accessibility trusted right now.
+    /// whenever `mappingStore.bindings` changes (wired below, in `init`). The warning also treats
+    /// the resting-hand controller as requiring Accessibility because its synthetic scroll/mouse
+    /// events use the same CGEvent path. Kept as a stored flag rather than re-scanning bindings on
+    /// every 5 s poll tick.
     private var enabledKeystrokeBindingExists = false
     /// Diagnostic only: last `AXIsProcessTrusted()` result logged by `recomputeAccessibilityWarning()`,
     /// so the 5 s poll only logs on an actual flip rather than spamming the log stream every tick.
@@ -421,12 +448,16 @@ final class TacitEngine: ObservableObject, EngineUIState {
     init(
         recorder: FixtureRecorder = FixtureRecorder(),
         actionEnvironment: ActionEnvironment = LiveActionEnvironment.make(),
+        continuousActionEnvironment: ContinuousActionEnvironment = .live(),
         mappingStore: MappingStore = MappingStore(),
         keyboardCalibrationStore: KeyboardCalibrationStore = KeyboardCalibrationStore()
     ) {
         self.actionEnvironment = actionEnvironment
         self.mappingStore = mappingStore
         self.keyboardCalibrationStore = keyboardCalibrationStore
+        self.continuousActionDispatcher = ContinuousActionDispatcher(
+            environment: continuousActionEnvironment
+        )
 
         // Code review 2026-08-27, Finding 3: cold-start recovery, run before anything else below.
         // If the previous process left a chord latched — crashed or was force-quit while a
@@ -464,6 +495,12 @@ final class TacitEngine: ObservableObject, EngineUIState {
             forKey: Self.keyboardHomeEnabledDefaultsKey
         ) as? Bool
         self.isKeyboardHomeEnabled = storedKeyboardHomeEnabled ?? false
+        let storedModifierHandEnabled = UserDefaults.standard.object(
+            forKey: Self.modifierHandEnabledDefaultsKey
+        ) as? Bool
+        self.isModifierHandEnabled = storedModifierHandEnabled ?? true
+        self.controllerHand = UserDefaults.standard.string(forKey: Self.controllerHandDefaultsKey)
+            .flatMap(ControllerHand.init(rawValue:)) ?? .left
 
         capture.$state
             .sink { [weak self] state in
@@ -590,16 +627,38 @@ final class TacitEngine: ObservableObject, EngineUIState {
         isKeyboardHomeEnabled && activeKeyboardCalibrationProfile == nil
     }
 
+    var activeModifierHandProfile: ModifierHandProfile? {
+        guard let keyboardProfile = activeKeyboardCalibrationProfile else { return nil }
+        return ModifierHandProfile(
+            keyboardProfile: keyboardProfile,
+            controllerHand: controllerHand
+        )
+    }
+
+    var needsModifierHandCalibration: Bool {
+        isModifierHandEnabled && activeModifierHandProfile == nil
+    }
+
     @discardableResult
     func installKeyboardCalibrationProfile(_ profile: KeyboardHomeCalibrationProfile) -> Bool {
         guard profile.cameraID == activeCameraUniqueID else { return false }
         guard keyboardCalibrationStore.save(profile) else { return false }
         syncKeyboardHomeProfileToPipeline()
+        syncModifierHandProfileToPipeline()
         objectWillChange.send()
         return true
     }
 
     func setKeyboardCalibrationActive(_ active: Bool) {
+        if active {
+            modifierHandState = .unavailable
+            continuousActionDispatcher.reset()
+            modifierStatusController.update(
+                state: .unavailable,
+                hand: controllerHand,
+                enabled: false
+            )
+        }
         Task { [pipeline] in
             await pipeline?.setKeyboardCalibrationActive(active)
         }
@@ -612,6 +671,22 @@ final class TacitEngine: ObservableObject, EngineUIState {
         }
         Task { [pipeline, profile] in
             await pipeline?.setKeyboardHomeProfile(profile)
+        }
+    }
+
+    private func syncModifierHandProfileToPipeline() {
+        let profile = isModifierHandEnabled ? activeModifierHandProfile : nil
+        if profile == nil {
+            modifierHandState = .unavailable
+            continuousActionDispatcher.reset()
+        }
+        modifierStatusController.update(
+            state: modifierHandState,
+            hand: controllerHand,
+            enabled: isModifierHandEnabled && profile != nil
+        )
+        Task { [pipeline, profile] in
+            await pipeline?.setModifierHandProfile(profile)
         }
     }
 
@@ -658,6 +733,10 @@ final class TacitEngine: ObservableObject, EngineUIState {
         let keyboardProfile = isKeyboardHomeEnabled ? activeKeyboardCalibrationProfile : nil
         Task { [pipeline, keyboardProfile] in
             await pipeline.setKeyboardHomeProfile(keyboardProfile)
+        }
+        let modifierProfile = isModifierHandEnabled ? activeModifierHandProfile : nil
+        Task { [pipeline, modifierProfile] in
+            await pipeline.setModifierHandProfile(modifierProfile)
         }
 
         capture.onFrame = { pixelBuffer, timestamp in
@@ -972,6 +1051,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
             // No live frame is coming while capture is stopped: a stale preview candidate must not
             // keep a card lit (requirement 5 — a paused strip shows the dimmed canned frame only).
             previewCandidate = nil
+            modifierHandState = .unavailable
+            continuousActionDispatcher.reset()
+            modifierStatusController.update(
+                state: .unavailable,
+                hand: controllerHand,
+                enabled: false
+            )
             if let pipeline {
                 Task { await pipeline.reset() }
             }
@@ -1045,7 +1131,7 @@ final class TacitEngine: ObservableObject, EngineUIState {
             lastLoggedAccessibilityTrusted = trusted
             TacitLog.engine.notice("AXIsProcessTrusted -> \(trusted, privacy: .public)")
         }
-        accessibilityWarning = (enabledKeystrokeBindingExists && !trusted)
+        accessibilityWarning = ((enabledKeystrokeBindingExists || isModifierHandEnabled) && !trusted)
             ? "Keystroke actions need Accessibility"
             : nil
         recomputeWarning()
@@ -1067,6 +1153,13 @@ final class TacitEngine: ObservableObject, EngineUIState {
 
         latestFrames = result.frames
         keyboardLiftState = result.keyboardLiftState
+        modifierHandState = result.modifierHandResult.state
+        continuousActionDispatcher.update(result.modifierHandResult)
+        modifierStatusController.update(
+            state: modifierHandState,
+            hand: controllerHand,
+            enabled: isModifierHandEnabled && activeModifierHandProfile != nil
+        )
         if let frame = result.frame {
             latestFrame = frame
             recorder.append(frame)
@@ -1872,6 +1965,8 @@ private actor PipelineCore {
     private var keyboardHomeProfile: KeyboardHomeCalibrationProfile?
     private var keyboardLiftDetector = KeyboardLiftDetector()
     private var keyboardCalibrationActive = false
+    private var modifierHandProfile: ModifierHandProfile?
+    private var modifierHandController = ModifierHandController()
 
     /// Task 21 controller ruling (R2): the PRODUCTION tap/swipe detectors, run on every frame
     /// regardless of arbitration state — their own internal tracking (an in-progress pinch or
@@ -1929,6 +2024,7 @@ private actor PipelineCore {
         var frames: [LandmarkFrame]
         var frame: LandmarkFrame?
         var keyboardLiftState: KeyboardLiftState
+        var modifierHandResult: ModifierHandResult
         var arbitrationState: ArbitrationState
         var event: GestureEvent?
         /// Raw candidate for Task 19's preview strip, bypassing arbitration entirely — nil unless
@@ -1997,19 +2093,38 @@ private actor PipelineCore {
     /// from.
     func process(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) async -> Result {
         let frames: [LandmarkFrame]
-        if keyboardHomeProfile != nil || keyboardCalibrationActive {
+        if keyboardHomeProfile != nil || keyboardCalibrationActive || modifierHandProfile != nil {
             frames = await twoHandDetector.detect(in: pixelBuffer, timestamp: timestamp)
         } else {
             frames = await singleHandDetector.detect(in: pixelBuffer, timestamp: timestamp)
         }
-        let frame = frames.first
         let keyboardLiftState = keyboardHomeProfile.map {
             keyboardLiftDetector.ingest(frames, profile: $0)
         } ?? .unavailable
+        let modifierHandResult: ModifierHandResult
+        let frame: LandmarkFrame?
+        if let modifierHandProfile, !keyboardCalibrationActive {
+            modifierHandResult = modifierHandController.ingest(frames, profile: modifierHandProfile)
+            frame = modifierHandResult.controllerFrame
+        } else {
+            modifierHandResult = ModifierHandResult(
+                state: .unavailable,
+                controllerFrame: nil,
+                sample: nil,
+                consumesDiscreteGesture: false
+            )
+            frame = modifierHandProfile == nil ? frames.first : nil
+        }
+        if modifierHandProfile != nil, frame == nil {
+            // Crossing out of the calibrated zone is a hard intent boundary. Rebuild every
+            // momentary detector so an in-progress pinch/swipe cannot resume after the hand
+            // leaves and re-enters, and calibration frames can never complete a live gesture.
+            resetProductionMomentaryDetectors()
+        }
         let candidate = frame.flatMap(classifier.classify)
         let staticEvent = arbitration.ingest(candidate, at: timestamp)
 
-        let momentary = frame.flatMap {
+        let detectedMomentary = frame.flatMap {
             tapDetector.ingest($0)
                 ?? swipeDetector.ingest($0)
                 ?? palmTiltDetector.ingest($0)
@@ -2018,6 +2133,7 @@ private actor PipelineCore {
                 ?? wristRotateDetector.ingest($0)
                 ?? twoFingerScrollDetector.ingest($0)
         }
+        let momentary = modifierHandResult.consumesDiscreteGesture ? nil : detectedMomentary
         let preDebouncedEvent = momentary.flatMap { arbitration.ingestPreDebounced($0, at: timestamp) }
         let event = preDebouncedEvent ?? staticEvent
 
@@ -2055,6 +2171,7 @@ private actor PipelineCore {
             frames: frames,
             frame: frame,
             keyboardLiftState: keyboardLiftState,
+            modifierHandResult: modifierHandResult,
             arbitrationState: arbitration.state,
             event: event,
             previewCandidate: previewCandidate,
@@ -2067,6 +2184,8 @@ private actor PipelineCore {
     func reset() {
         arbitration.reset()
         keyboardLiftDetector.reset()
+        modifierHandController.reset()
+        resetProductionMomentaryDetectors()
     }
 
     /// M3 Task 9: forwards to `ArbitrationEngine.extendWindow(at:)`, called by `TacitEngine` once
@@ -2129,6 +2248,22 @@ private actor PipelineCore {
 
     func setKeyboardCalibrationActive(_ active: Bool) {
         keyboardCalibrationActive = active
+    }
+
+    func setModifierHandProfile(_ profile: ModifierHandProfile?) {
+        modifierHandProfile = profile
+        modifierHandController.reset()
+        resetProductionMomentaryDetectors()
+    }
+
+    private func resetProductionMomentaryDetectors() {
+        tapDetector = PinchTapDetector()
+        swipeDetector = ThumbSwipeDetector()
+        palmTiltDetector = PalmTiltDetector()
+        handSwipeDetector = HandSwipeDetector()
+        fistToOpenDetector = FistToOpenDetector()
+        wristRotateDetector = WristRotateDetector()
+        twoFingerScrollDetector = TwoFingerScrollDetector()
     }
 
     /// Fix (M3 Task 7): the M3 Task 6 version of this recompute swapped `arbitration`'s tuning

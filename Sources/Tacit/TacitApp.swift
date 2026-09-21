@@ -68,7 +68,7 @@ private struct MenuBarLabel: View {
                 if !UserDefaults.standard.bool(forKey: OnboardingView.onboardedDefaultsKey) {
                     openWindow(id: "onboarding")
                     WindowActivator.bringToFront(id: "onboarding", title: "Welcome to Tacit")
-                } else if engine.needsKeyboardCalibration {
+                } else if engine.needsKeyboardCalibration || engine.needsModifierHandCalibration {
                     openWindow(id: "keyboard-calibration")
                     WindowActivator.bringToFront(
                         id: "keyboard-calibration",

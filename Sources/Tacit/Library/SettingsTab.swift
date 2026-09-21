@@ -34,6 +34,18 @@ struct SettingsTab: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader("Controller hand")
+                    modifierHandToggleRow
+                    controllerHandRow
+                    modifierHandStatusRow
+                    Text("Lightly pinch to engage. Move sideways to pan or scroll; move toward or away from the camera to zoom. Quick thumb taps switch apps.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
                     sectionHeader("Sensitivity")
                     sensitivityRow
                     Text("How readily Tacit starts and continues recognizing a gesture. Most people should leave this on Standard.")
@@ -142,7 +154,8 @@ struct SettingsTab: View {
         .frame(minHeight: 44, alignment: .leading)
         .padding(.horizontal, 10)
         .onChange(of: engine.cameraID) { _, _ in
-            if engine.isKeyboardHomeEnabled && engine.activeKeyboardCalibrationProfile == nil {
+            if (engine.isKeyboardHomeEnabled || engine.isModifierHandEnabled)
+                && engine.activeKeyboardCalibrationProfile == nil {
                 openCalibration()
             }
         }
@@ -169,6 +182,71 @@ struct SettingsTab: View {
             id: "keyboard-calibration",
             title: "Keyboard Gesture Calibration"
         )
+    }
+
+    // MARK: - Modifier hand
+
+    private var modifierHandToggleRow: some View {
+        Toggle(isOn: $engine.isModifierHandEnabled) {
+            Text("Enable resting-hand controller")
+                .font(.body)
+        }
+        .toggleStyle(TacitToggleStyle())
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+        .onChange(of: engine.isModifierHandEnabled) { _, enabled in
+            if enabled && engine.activeModifierHandProfile == nil {
+                openCalibration()
+            }
+        }
+    }
+
+    private var controllerHandRow: some View {
+        HStack(spacing: 8) {
+            Text("Use this hand")
+                .font(.body)
+            Spacer(minLength: 8)
+            Picker("", selection: $engine.controllerHand) {
+                ForEach(ControllerHand.allCases, id: \.self) { hand in
+                    Text(hand.displayName).tag(hand)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 120)
+        }
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+
+    private var modifierHandStatusRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(modifierHandStatus)
+                    .font(.body)
+                Text("Uses this camera's keyboard calibration")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(
+                engine.activeModifierHandProfile == nil ? "Calibrate…" : "Recalibrate…",
+                action: openCalibration
+            )
+            .buttonStyle(TacitButtonStyle())
+        }
+        .frame(minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+
+    private var modifierHandStatus: String {
+        guard engine.activeModifierHandProfile != nil else { return "Calibration required" }
+        guard engine.isModifierHandEnabled else { return "Calibrated" }
+        switch engine.modifierHandState {
+        case .unavailable: return "Calibrated · waiting for camera"
+        case .outsideZone: return "Live · hand outside its zone"
+        case .ready: return "Live · ready"
+        case .engaged: return "Live · engaged"
+        }
     }
 
     // MARK: - Sensitivity
